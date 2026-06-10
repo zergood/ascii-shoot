@@ -219,16 +219,19 @@ class Renderer:
             top  = half_h - sh // 2
             fog  = max(0.4, 1.0 - depth / 14.0)
             fg   = _dim(ENEMY_COLOR.get(e.kind, WHITE), fog)
+            sw_range = max(sw - 1, 1)
 
             for cx_off in range(-sw // 2, sw // 2 + 1):
                 col = sx + cx_off
                 if col < 0 or col >= w or z_buf[col] <= depth:
                     continue
+                rx = max(0.0, min(1.0, (cx_off + sw // 2) / sw_range))
                 for row_off in range(sh):
                     row = top + row_off
                     if row < 0 or row >= view_h:
                         continue
-                    ch = _spr.enemy_char(e.kind, row_off / sh, frame, e.state)
+                    ch = _spr.enemy_char(
+                        e.kind, row_off / sh, rx, frame, e.state)
                     if ch is None:
                         continue
                     try:

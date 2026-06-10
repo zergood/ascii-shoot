@@ -40,50 +40,80 @@ GUN_FLASH = [
 ]
 
 # ---------------------------------------------------------------------------
-# Enemy sprites — static band tables
+# Enemy sprites — 2-D ASCII art
 # ---------------------------------------------------------------------------
-# Each entry is (ry_max, char).
-# ry_max: the band covers [previous ry_max, ry_max).
-# char:   str for a fixed character, tuple (patrol_ch, chase_frame0, chase_frame1)
-#         for the animated legs row.
-# Rows after the last band are transparent (None).
+# Structure: dict[kind] = [frame_0_rows, frame_1_rows]
+# Each frame is a list of equal-length strings (left→right, top→bottom).
+# Space = transparent (pixel not drawn).
+# Frame 0 is used when patrolling; frames 0/1 alternate when chasing.
+#
+# You can edit the art here and it immediately shows in-game.
+# All rows inside one sprite must have the same length.
 
-_LEGS = ('|', '/', '\\')   # (patrol, chase_frame0, chase_frame1)
+ENEMY_SPRITES_2D: dict[str, list[list[str]]] = {
 
-ENEMY_SPRITES: dict[str, list[tuple]] = {
     'zombie': [
-        (0.18, 'O'),   # head
-        (0.22, '-'),   # neck
-        (0.65, 'Z'),   # body
-        (0.80, _LEGS), # legs
+        # ── frame 0  (patrol / still) ──
+        [' O ',    #  head
+         '_Z_',    #  arms out
+         ' | ',    #  waist
+         '/|\\'],  #  legs  →  /|\
+        # ── frame 1  (walking step) ──
+        [' O ',
+         '_Z_',
+         ' | ',
+         '/ \\'],  #  legs  →  / \
     ],
+
     'demon': [
-        (0.10, 'W'),   # horns
-        (0.22, 'O'),   # head
-        (0.27, '}'),   # chest
-        (0.65, 'D'),   # body
-        (0.80, _LEGS), # legs
+        # ── frame 0 ──
+        ['\\V/',   #  wings / horns  →  \V/
+         ' O ',    #  head
+         '{D}',    #  wide body
+         ' | ',    #  waist
+         '/|\\'],  #  legs
+        # ── frame 1 ──
+        ['\\V/',
+         ' O ',
+         '{D}',
+         ' | ',
+         '\\ /'],  #  legs step  →  \ /
     ],
+
     'imp': [
-        (0.08, '^'),   # spike
-        (0.20, 'O'),   # head
-        (0.25, '~'),   # neck
-        (0.65, 'I'),   # body
-        (0.80, _LEGS), # legs
+        # ── frame 0 ──
+        ['^.^',    #  spiky head / eyes
+         ' O ',    #  face
+         '~I~',    #  squiggly body
+         ' | ',    #  waist
+         '/|\\'],  #  legs
+        # ── frame 1 ──
+        ['^.^',
+         ' O ',
+         '~I~',
+         ' | ',
+         '/ \\'],  #  legs step
     ],
 }
 
 
-def enemy_char(kind: str, ry: float, frame: int, state: str) -> str | None:
-    """Look up the sprite character for *kind* at vertical fraction *ry*.
+def enemy_char(kind: str, ry: float, rx: float,
+               frame: int, state: str) -> str | None:
+    """Return the sprite character at position (ry, rx) ∈ [0, 1]².
 
-    *frame* (0 or 1) and *state* only affect the animated legs band.
-    Returns None for transparent (below-sprite) rows.
+    ry  — vertical fraction  (0 = top,  1 = bottom)
+    rx  — horizontal fraction (0 = left, 1 = right)
+    Returns None for transparent cells (out-of-bounds or space character).
     """
-    for ry_max, ch in ENEMY_SPRITES.get(kind, ENEMY_SPRITES['zombie']):
-        if ry < ry_max:
-            if isinstance(ch, tuple):
-                patrol_ch, f0, f1 = ch
-                return (f1 if frame else f0) if state == 'chase' else patrol_ch
-            return ch
-    return None
+    frames = ENEMY_SPRITES_2D.get(kind, ENEMY_SPRITES_2D['zombie'])
+    f      = (frame % 2) if state == 'chase' else 0
+    rows   = frames[f]
+
+    row_idx = int(ry * len(rows))
+    if row_idx >= len(rows):
+        return None                         # below sprite → transparent
+
+    row_str = rows[row_idx]
+    col_idx = min(int(rx * len(row_str)), len(row_str) - 1)
+    ch      = row_str[col_idx]
+    return None if ch == ' ' else ch        # space → transparent
