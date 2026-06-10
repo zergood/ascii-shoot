@@ -49,6 +49,13 @@ ENEMY_SPAWNS = [
     (17.5, 14.5, 'demon'),
 ]
 
+PICKUP_SPAWNS = [
+    (6.5, 6.5, 'hp'), (14.5, 3.5, 'hp'), (3.5, 14.5, 'hp'),
+    (20.5, 20.5, 'hp'), (10.5, 13.5, 'hp'),
+    (2.5, 7.5, 'ammo'), (12.5, 2.5, 'ammo'), (21.5, 5.5, 'ammo'),
+    (5.5, 20.5, 'ammo'), (17.5, 11.5, 'ammo'),
+]
+
 # Shade chars ordered near→far
 SHADE_UNI   = ['█', '▓', '▒', '░', '·']
 SHADE_ASCII = ['#', '@', '+', ':', '.']
@@ -85,6 +92,7 @@ class Enemy:
         self.speed        = k['speed']
         self.dmg          = k['dmg']
         self.char         = k['char']
+        self.cpair        = 1 if kind == 'zombie' else 7   # color pair
         self.state        = 'patrol'     # patrol | chase | dead
         self.last_attack  = 0.0
         self.patrol_vx    = random.uniform(-0.6, 0.6)
@@ -103,9 +111,14 @@ class Game:
         self.enemies  = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
         self.messages = []    # list of (text, expire_float)
         self.last_t   = time.time()
-        self.flash     = 0.0   # muzzle flash timer
-        self.shoot_cd  = 0.0
-        self.dmg_flash = 0.0   # red border on hit
+        self.flash      = 0.0   # muzzle flash timer
+        self.shoot_cd   = 0.0
+        self.dmg_flash  = 0.0   # red border on hit
+        self.recoil     = 0.0   # shoot recoil angle offset (decays)
+        self.hit_shake  = 0.0   # hit shake amplitude (decays)
+        self._view_angle = 0.0  # render angle (player.angle + recoil + shake)
+        self.corpses    = []    # (x, y) of killed enemies
+        self.pickups    = list(PICKUP_SPAWNS)
         self.running  = True
         self.won      = False
         self._unicode = True
@@ -217,6 +230,7 @@ class Game:
         p.ammo   -= 1
         self.shoot_cd = 0.25
         self.flash    = 0.12
+        self.recoil   = 0.05   # kick view slightly right, springs back
 
         rdx = math.cos(p.angle)
         rdy = math.sin(p.angle)
@@ -254,6 +268,7 @@ class Game:
         if best_e.health <= 0:
             best_e.state  = 'dead'
             p.score       += 150
+            self.corpses.append((best_e.x, best_e.y))
             self._msg(f"KILL! +150pts  [{best_d:.1f}m]")
         else:
             self._msg(f"HIT {best_e.char}  -{dmg}hp  [{best_d:.1f}m]")
@@ -267,6 +282,10 @@ class Game:
         self.shoot_cd  = max(0.0, self.shoot_cd  - dt)
         self.flash     = max(0.0, self.flash     - dt)
         self.dmg_flash = max(0.0, self.dmg_flash - dt)
+        self.hit_shake = max(0.0, self.hit_shake - dt * 4.0)
+        self.recoil   *= max(0.0, 1.0 - 14.0 * dt)   # spring back
+        if self.recoil < 0.001:
+            self.recoil = 0.0
         self.messages  = [(m, t) for m, t in self.messages if t > now]
 
         alive = [e for e in self.enemies if e.state != 'dead']
@@ -302,6 +321,7 @@ class Game:
                     p.health       -= dmg
                     e.last_attack   = now
                     self.dmg_flash  = 0.55
+                    self.hit_shake  = 0.06
                     self._msg(f"OUCH! -{dmg}hp")
                     if p.health <= 0:
                         self.running = False
@@ -317,6 +337,23 @@ class Game:
                 if not self._wall(nx, e.y): e.x = nx
                 if not self._wall(e.x, ny): e.y = ny
 
+        # Pickup collection
+        remaining = []
+        for pk in self.pickups:
+            dist = math.sqrt((pk[0] - p.x)**2 + (pk[1] - p.y)**2)
+            if dist < 0.75:
+                if pk[2] == 'hp':
+                    gained = min(25, 100 - p.health)
+                    p.health += gained
+                    self._msg(f"+{gained} HEALTH")
+                else:
+                    gained = min(15, 99 - p.ammo)
+                    p.ammo += gained
+                    self._msg(f"+{gained} AMMO")
+            else:
+                remaining.append(pk)
+        self.pickups = remaining
+
     # -----------------------------------------------------------------------
     # Raycasting (DDA)
     # -----------------------------------------------------------------------
@@ -324,8 +361,8 @@ class Game:
     def _cast(self, col: int, w: int):
         """Return (perp_dist, wall_type, side) for screen column `col`."""
         p   = self.player
-        dx  = math.cos(p.angle)
-        dy  = math.sin(p.angle)
+        dx  = math.cos(self._view_angle)
+        dy  = math.sin(self._view_angle)
         # Camera plane perpendicular to view direction, scaled for ~66° FOV
         px  =  0.66 * dy
         py  = -0.66 * dx
@@ -376,6 +413,11 @@ class Game:
         half_h = view_h // 2
         shade  = SHADE_UNI if self._unicode else SHADE_ASCII
         dot    = '·' if self._unicode else '.'
+
+        # Compute shaken view angle (doesn't affect player state)
+        shake_off = (random.uniform(-self.hit_shake, self.hit_shake)
+                     if self.hit_shake > 0.005 else 0.0)
+        self._view_angle = self.player.angle + self.recoil + shake_off
 
         # Ceiling & floor
         for row in range(half_h):
@@ -437,27 +479,34 @@ class Game:
 
     def _draw_enemies(self, z_buf, w, view_h, half_h):
         p   = self.player
-        dx  = math.cos(p.angle);  dy = math.sin(p.angle)
-        px  =  0.66 * dy;         py = -0.66 * dx
-        # inv of camera matrix  (det is always 0.66)
+        dx  = math.cos(self._view_angle);  dy = math.sin(self._view_angle)
+        px  =  0.66 * dy;                  py = -0.66 * dx
         inv = 1.0 / (px * dy - dx * py)
 
+        def _project(ox, oy):
+            ex, ey = ox - p.x, oy - p.y
+            tx = inv * ( dy * ex - dx * ey)
+            tz = inv * (-py * ex + px * ey)
+            return tx, tz
+
+        # ---- live enemies ----
         visible = []
         for e in self.enemies:
             if e.state == 'dead':
                 continue
-            ex, ey  = e.x - p.x, e.y - p.y
-            tx  = inv * ( dy * ex - dx * ey)   # strafe offset
-            tz  = inv * (-py * ex + px * ey)   # depth (must be > 0)
+            tx, tz = _project(e.x, e.y)
             if tz <= 0.1:
                 continue
-            sx  = int((w / 2) * (1.0 + tx / tz))
-            sh  = min(abs(int(view_h / tz)), view_h)
+            sx = int((w / 2) * (1.0 + tx / tz))
+            sh = min(abs(int(view_h / tz)), view_h)
             visible.append((tz, e, sx, sh))
 
+        max_sw = max(1, w // 8)   # sprite width cap — no more "enemy wall"
+
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
-            sw  = max(1, sh // 2)
+            sw  = min(max(1, sh // 2), max_sw)
             top = half_h - sh // 2
+            attr = curses.color_pair(e.cpair) | curses.A_BOLD
             for cx_off in range(-sw // 2, sw // 2 + 1):
                 col = sx + cx_off
                 if col < 0 or col >= w - 1 or z_buf[col] <= depth:
@@ -473,10 +522,29 @@ class Game:
                     elif ry < 0.80: ch = '|'
                     else:           continue
                     try:
-                        self.scr.addstr(row, col, ch,
-                            curses.color_pair(1) | curses.A_BOLD)
+                        self.scr.addstr(row, col, ch, attr)
                     except curses.error:
                         pass
+
+        # ---- floor objects: corpses + pickups ----
+        floor_objs = (
+            [(cx, cy, '%', curses.color_pair(1)) for cx, cy in self.corpses] +
+            [(px2, py2, '+' if k == 'hp' else '*',
+              curses.color_pair(4) if k == 'hp' else curses.color_pair(3))
+             for px2, py2, k in self.pickups]
+        )
+        for ox, oy, fch, fattr in floor_objs:
+            tx, tz = _project(ox, oy)
+            if tz <= 0.1:
+                continue
+            sx  = int((w / 2) * (1.0 + tx / tz))
+            sh  = min(abs(int(view_h / tz)), view_h)
+            row = min(view_h - 1, half_h + sh // 3)
+            if 0 <= sx < w - 1 and z_buf[sx] > tz:
+                try:
+                    self.scr.addstr(row, sx, fch, fattr | curses.A_BOLD)
+                except curses.error:
+                    pass
 
     def _draw_minimap(self, w):
         size  = 13
@@ -493,7 +561,23 @@ class Game:
                 try: self.scr.addstr(oy + my, ox + mx, ch, color)
                 except curses.error: pass
 
-        # Player dot + direction indicator
+        # Pickups on minimap
+        for px2, py2, kind in self.pickups:
+            mx = int(px2 * scale); my = int(py2 * scale)
+            if 0 <= mx < size and 0 <= my < size:
+                ch    = '+' if kind == 'hp' else '*'
+                color = curses.color_pair(4) if kind == 'hp' else curses.color_pair(3)
+                try: self.scr.addstr(oy + my, ox + mx, ch, color)
+                except curses.error: pass
+
+        # Corpses on minimap
+        for cx2, cy2 in self.corpses:
+            mx = int(cx2 * scale); my = int(cy2 * scale)
+            if 0 <= mx < size and 0 <= my < size:
+                try: self.scr.addstr(oy + my, ox + mx, 'x', curses.color_pair(1))
+                except curses.error: pass
+
+        # Player dot
         ppx = int(self.player.x * scale)
         ppy = int(self.player.y * scale)
         if 0 <= ppx < size and 0 <= ppy < size:
@@ -503,17 +587,24 @@ class Game:
             except curses.error:
                 pass
 
-        # Two look-ahead dots showing direction
+        # FOV cone: two edge rays + center ray
+        fov_half = math.atan(0.66)   # ~33 deg = half of ~66 deg FOV
         dot_ch = '·' if self._unicode else '.'
-        for step in (2.0, 3.5):
-            fx = int((self.player.x + math.cos(self.player.angle) * step) * scale)
-            fy = int((self.player.y + math.sin(self.player.angle) * step) * scale)
+        for dist in (2.0, 3.5, 5.0):
+            for ao in (-fov_half, fov_half):
+                fx = int((self.player.x + math.cos(self.player.angle + ao) * dist) * scale)
+                fy = int((self.player.y + math.sin(self.player.angle + ao) * dist) * scale)
+                if 0 <= fx < size and 0 <= fy < size:
+                    try: self.scr.addstr(oy + fy, ox + fx, '.', curses.color_pair(5))
+                    except curses.error: pass
+        for dist in (1.5, 2.5, 3.5):
+            fx = int((self.player.x + math.cos(self.player.angle) * dist) * scale)
+            fy = int((self.player.y + math.sin(self.player.angle) * dist) * scale)
             if 0 <= fx < size and 0 <= fy < size and (fx != ppx or fy != ppy):
                 try:
                     self.scr.addstr(oy + fy, ox + fx, dot_ch,
                         curses.color_pair(4) | curses.A_BOLD)
-                except curses.error:
-                    pass
+                except curses.error: pass
 
         # Enemy dots
         for e in self.enemies:
