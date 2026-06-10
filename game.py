@@ -105,8 +105,9 @@ class Enemy:
 # ---------------------------------------------------------------------------
 
 class Game:
-    def __init__(self, stdscr):
+    def __init__(self, stdscr, quality: str = 'normal'):
         self.scr      = stdscr
+        self.quality  = quality          # 'low' | 'normal' | 'high'
         self.player   = Player()
         self.enemies  = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
         self.messages = []    # list of (text, expire_float)
@@ -148,6 +149,16 @@ class Game:
             self.scr.erase()
         except Exception:
             self._unicode = False
+        # Extra color pairs for hi-res half-block wall edges (pair 10-17)
+        self._hb = {}   # (fg_color, bg_color) -> pair index
+        if self.quality == 'high':
+            n = 10
+            for fg in [curses.COLOR_WHITE,  curses.COLOR_YELLOW,
+                       curses.COLOR_GREEN,  curses.COLOR_RED]:
+                for bg in [curses.COLOR_CYAN, curses.COLOR_BLUE]:
+                    curses.init_pair(n, fg, bg)
+                    self._hb[(fg, bg)] = n
+                    n += 1
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -409,30 +420,49 @@ class Game:
 
         scr.erase()
 
-        view_h = h - 3        # rows reserved for HUD
-        half_h = view_h // 2
-        shade  = SHADE_UNI if self._unicode else SHADE_ASCII
-        dot    = '·' if self._unicode else '.'
+        view_h    = h - 3        # rows reserved for HUD
+        half_h    = view_h // 2
+        hires     = self.quality == 'high' and self._unicode
+        ray_step  = 4 if self.quality == 'low' else 1
+        shade     = SHADE_ASCII if self.quality == 'low' or not self._unicode \
+                    else SHADE_UNI
 
         # Compute shaken view angle (doesn't affect player state)
         shake_off = (random.uniform(-self.hit_shake, self.hit_shake)
                      if self.hit_shake > 0.005 else 0.0)
         self._view_angle = self.player.angle + self.recoil + shake_off
 
-        # Ceiling & floor
-        for row in range(half_h):
-            try: scr.addstr(row, 0, dot * (w - 1), curses.color_pair(5))
-            except curses.error: pass
-        for row in range(half_h, view_h):
-            try: scr.addstr(row, 0, dot * (w - 1), curses.color_pair(6))
-            except curses.error: pass
+        # ---- Ceiling & floor ------------------------------------------------
+        if hires:
+            # Distance-based gradient: sparse overhead → dense near horizon
+            ceil_g  = [' ', ' ', '·', '░']   # top→horizon
+            floor_g = ['▒', '░', '·', ' ']   # horizon→bottom
+            for row in range(half_h):
+                idx = min(3, int(row / max(1, half_h) * 4))
+                try: scr.addstr(row, 0, ceil_g[idx] * (w - 1), curses.color_pair(5))
+                except curses.error: pass
+            for row in range(half_h, view_h):
+                idx = min(3, int((row - half_h) / max(1, view_h - half_h) * 4))
+                try: scr.addstr(row, 0, floor_g[idx] * (w - 1), curses.color_pair(6))
+                except curses.error: pass
+        else:
+            sky_ch = '·' if self._unicode and self.quality != 'low' else ' '
+            for row in range(half_h):
+                try: scr.addstr(row, 0, sky_ch * (w - 1), curses.color_pair(5))
+                except curses.error: pass
+            for row in range(half_h, view_h):
+                try: scr.addstr(row, 0, sky_ch * (w - 1), curses.color_pair(6))
+                except curses.error: pass
 
         z_buf = [999.0] * w
 
-        # Walls
-        for col in range(w - 1):
+        # ---- Walls ----------------------------------------------------------
+        # Map color pair index back to curses color constant (for half-blocks)
+        _CP_TO_CLR = {1: curses.COLOR_RED,    2: curses.COLOR_WHITE,
+                      3: curses.COLOR_YELLOW,  4: curses.COLOR_GREEN}
+
+        for col in range(0, w - 1, ray_step):
             dist, wtype, side = self._cast(col, w)
-            z_buf[col] = dist
 
             wh  = min(int(view_h / dist), view_h)
             top = max(0,      half_h - wh // 2)
@@ -445,9 +475,33 @@ class Game:
                 cp = max(1, cp - 1)     # darker N/S faces
             attr = curses.color_pair(cp) | (curses.A_BOLD if dist < 2.5 else 0)
 
-            for row in range(top, bot):
-                try: scr.addstr(row, col, ch, attr)
-                except curses.error: pass
+            for c in range(col, min(col + ray_step, w - 1)):
+                z_buf[c] = dist
+                for row in range(top, bot):
+                    try: scr.addstr(row, c, ch, attr)
+                    except curses.error: pass
+
+            # Smooth half-block edges at wall top & bottom (high quality only)
+            if hires:
+                wh_f  = min(view_h / dist, view_h * 2.0)
+                top_f = half_h - wh_f / 2
+                bot_f = half_h + wh_f / 2
+                top_i, bot_i   = int(top_f), int(bot_f)
+                top_fr, bot_fr = top_f - top_i, bot_f - bot_i
+
+                wc = _CP_TO_CLR.get(cp, curses.COLOR_YELLOW)
+
+                # '▄' upper-half=bg(ceiling), lower-half=fg(wall)
+                if 0 <= top_i < view_h and top_fr > 0.5:
+                    p = self._hb.get((wc, curses.COLOR_CYAN), 5)
+                    try: scr.addstr(top_i, col, '▄', curses.color_pair(p))
+                    except curses.error: pass
+
+                # '▀' upper-half=fg(wall), lower-half=bg(floor)
+                if 0 <= bot_i < view_h and 0 < bot_fr < 0.5:
+                    p = self._hb.get((wc, curses.COLOR_BLUE), 6)
+                    try: scr.addstr(bot_i, col, '▀', curses.color_pair(p))
+                    except curses.error: pass
 
         # Enemy sprites
         self._draw_enemies(z_buf, w, view_h, half_h)
@@ -621,6 +675,8 @@ class Game:
 
     def _draw_gun(self, view_h, w):
         """Draw weapon sprite at bottom-centre of the 3D view."""
+        if self.quality == 'low':
+            return
         cx = w // 2
         firing = self.flash > 0
         col = curses.color_pair(3) | curses.A_BOLD
@@ -766,7 +822,11 @@ class Game:
 # ---------------------------------------------------------------------------
 
 def main(stdscr):
-    Game(stdscr).run()
+    quality = 'normal'
+    for arg in sys.argv[1:]:
+        if arg in ('-l', '--low'):     quality = 'low'
+        elif arg in ('-H', '--high'):  quality = 'high'
+    Game(stdscr, quality).run()
 
 
 if __name__ == '__main__':
