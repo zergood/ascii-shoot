@@ -116,6 +116,7 @@ class Renderer:
         self._draw_walls(game.world, game.player, view_angle, view_h, half_h, w, z_buf)
         self._draw_live_enemies(game, z_buf, view_angle, view_h, half_h, w, now)
         self._draw_floor_objects(game, z_buf, view_angle, view_h, half_h, w)
+        self._draw_projectiles(game, z_buf, view_angle, view_h, half_h, w)
         self._draw_crosshair(game.flash, view_h, w)
         self._draw_gun(game, view_h, w)
         self._draw_minimap(game, w)
@@ -273,6 +274,32 @@ class Renderer:
             if 0 <= sx < w and z_buf[sx] > tz:
                 try:
                     self.con.print(sx, row, fch, fg=fcolor)
+                except Exception:
+                    pass
+
+    # ---- Projectiles -------------------------------------------------------
+
+    def _draw_projectiles(self, game, z_buf, view_angle,
+                          view_h, half_h, w) -> None:
+        p   = game.player
+        dx  = math.cos(view_angle);  dy = math.sin(view_angle)
+        px  =  0.66 * dy;            py = -0.66 * dx
+        inv = 1.0 / (px * dy - dx * py)
+
+        for proj in game.projectiles:
+            if not proj.alive:
+                continue
+            ex, ey = proj.x - p.x, proj.y - p.y
+            tx = inv * ( dy * ex - dx * ey)
+            tz = inv * (-py * ex + px * ey)
+            if tz <= 0.1:
+                continue
+            sx = int((w / 2) * (1.0 + tx / tz))
+            sy = half_h   # eye level
+            if 0 <= sx < w and 0 <= sy < view_h and z_buf[sx] > tz:
+                fog = max(0.4, 1.0 - tz / 14.0)
+                try:
+                    self.con.print(sx, sy, '*', fg=_dim(ORANGE, fog))
                 except Exception:
                     pass
 

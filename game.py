@@ -43,9 +43,9 @@ WORLD_MAP = [
 
 ENEMY_SPAWNS = [
     (5.5, 10.5, 'zombie'), (10.5, 5.5, 'zombie'), (15.5, 8.5, 'demon'),
-    (18.5, 18.5, 'zombie'), (8.5, 18.5, 'demon'), (12.5, 12.5, 'zombie'),
-    (20.5, 4.5, 'zombie'), (4.5, 20.5, 'demon'), (7.5, 7.5, 'zombie'),
-    (17.5, 14.5, 'demon'),
+    (18.5, 18.5, 'zombie'), (8.5, 18.5, 'demon'), (12.5, 12.5, 'imp'),
+    (20.5, 4.5, 'imp'),    (4.5, 20.5, 'demon'), (7.5, 7.5, 'zombie'),
+    (17.5, 14.5, 'imp'),
 ]
 
 PICKUP_SPAWNS = [
@@ -161,6 +161,39 @@ class World:
 
 
 # ---------------------------------------------------------------------------
+# Projectile
+# ---------------------------------------------------------------------------
+
+class Projectile:
+    SPEED = 7.0   # world-units per second
+
+    def __init__(self, x: float, y: float, dx: float, dy: float, dmg: int):
+        self.x     = x
+        self.y     = y
+        self.dx    = dx   # already scaled by SPEED
+        self.dy    = dy
+        self.dmg   = dmg
+        self.alive = True
+
+    def update(self, dt: float, player, world: World) -> int:
+        """Move, using sub-steps so fast projectiles can't skip past targets."""
+        if not self.alive:
+            return 0
+        sub = max(1, int((abs(self.dx) + abs(self.dy)) * dt / 0.25 + 1))
+        sdt = dt / sub
+        for _ in range(sub):
+            self.x += self.dx * sdt
+            self.y += self.dy * sdt
+            if world.is_wall(self.x, self.y):
+                self.alive = False
+                return 0
+            if math.sqrt((self.x - player.x) ** 2 + (self.y - player.y) ** 2) < 0.5:
+                self.alive = False
+                return self.dmg
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Game objects  — no curses
 # ---------------------------------------------------------------------------
 
@@ -183,8 +216,9 @@ class Player:
 
 class Enemy:
     KINDS = {
-        'zombie': dict(hp=30, speed=1.4, dmg=(4, 12), char='Z'),
-        'demon':  dict(hp=60, speed=0.9, dmg=(8, 20), char='D'),
+        'zombie': dict(hp=30, speed=1.4, dmg=(4, 12),  char='Z', ranged=False),
+        'demon':  dict(hp=60, speed=0.9, dmg=(8, 20),  char='D', ranged=False),
+        'imp':    dict(hp=20, speed=1.8, dmg=(5, 12),  char='I', ranged=True),
     }
 
     def __init__(self, x, y, kind='zombie'):
@@ -196,15 +230,19 @@ class Enemy:
         self.speed        = k['speed']
         self.dmg          = k['dmg']
         self.char         = k['char']
+        self.ranged       = k['ranged']
         self.cpair        = 1 if kind == 'zombie' else 7
         self.state        = 'patrol'
         self.last_attack  = 0.0
+        self.shot_cd      = 0.0
         self.patrol_vx    = random.uniform(-0.6, 0.6)
         self.patrol_vy    = random.uniform(-0.6, 0.6)
         self.patrol_timer = random.uniform(1.0, 3.0)
 
-    def update(self, dt: float, player, world: World, now: float) -> int:
-        """Update AI. Returns damage dealt this frame (0 if none)."""
+    def update(self, dt: float, player, world: World, now: float,
+               projectiles: list | None = None) -> int:
+        """Update AI. Returns melee damage this frame (0 if none).
+        Ranged enemies append Projectile objects to *projectiles* if provided."""
         if self.state == 'dead':
             return 0
 
@@ -217,15 +255,39 @@ class Enemy:
                 self.state = 'chase'
 
         if self.state == 'chase':
-            if dist > 0.9:
-                mv = self.speed * dt / dist
-                nx = self.x + ex * mv
-                ny = self.y + ey * mv
-                if not world.is_wall(nx, self.y): self.x = nx
-                if not world.is_wall(self.x, ny): self.y = ny
-            elif now - self.last_attack > 1.0:
-                self.last_attack = now
-                return random.randint(*self.dmg)
+            if self.ranged:
+                # Imp: keep 4-8u range; shoot a fireball every 2.5s
+                if dist > 6.0:
+                    mv = self.speed * dt / dist
+                    nx, ny = self.x + ex * mv, self.y + ey * mv
+                    if not world.is_wall(nx, self.y): self.x = nx
+                    if not world.is_wall(self.x, ny): self.y = ny
+                elif dist < 3.5:
+                    mv = self.speed * dt / dist
+                    nx, ny = self.x - ex * mv, self.y - ey * mv
+                    if not world.is_wall(nx, self.y): self.x = nx
+                    if not world.is_wall(self.x, ny): self.y = ny
+                self.shot_cd = max(0.0, self.shot_cd - dt)
+                if (self.shot_cd <= 0 and dist < 12.0
+                        and world.has_los(self.x, self.y, player.x, player.y)
+                        and projectiles is not None):
+                    self.shot_cd = 2.5
+                    self.last_attack = now
+                    spd = Projectile.SPEED
+                    projectiles.append(Projectile(
+                        self.x, self.y,
+                        (ex / dist) * spd, (ey / dist) * spd,
+                        random.randint(*self.dmg),
+                    ))
+            else:
+                if dist > 0.9:
+                    mv = self.speed * dt / dist
+                    nx, ny = self.x + ex * mv, self.y + ey * mv
+                    if not world.is_wall(nx, self.y): self.x = nx
+                    if not world.is_wall(self.x, ny): self.y = ny
+                elif now - self.last_attack > 1.0:
+                    self.last_attack = now
+                    return random.randint(*self.dmg)
         else:  # patrol
             self.patrol_timer -= dt
             if self.patrol_timer <= 0:
@@ -249,10 +311,11 @@ class Game:
     def __init__(self, renderer, input_handler):
         self.world   = World()
         self.player  = Player()
-        self.enemies = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
-        self.pickups = list(PICKUP_SPAWNS)
-        self.corpses  = []
-        self.messages = []
+        self.enemies     = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
+        self.pickups     = list(PICKUP_SPAWNS)
+        self.projectiles: list[Projectile] = []
+        self.corpses     = []
+        self.messages    = []
         self.running  = True
         self.won      = False
 
@@ -429,13 +492,31 @@ class Game:
         if p.combo > 0 and p.combo_t > 0 and now > p.combo_t:
             p.combo = 0
 
+        # Update projectiles
+        proj_dmg = 0
+        surviving = []
+        for proj in self.projectiles:
+            d = proj.update(dt, self.player, self.world)
+            if d:
+                proj_dmg += d
+            if proj.alive:
+                surviving.append(proj)
+        self.projectiles = surviving
+        if proj_dmg:
+            self.player.health -= proj_dmg
+            self.dmg_flash      = 0.55
+            self.hit_shake      = 0.06
+            self._msg(f"IMP HIT! -{proj_dmg}hp")
+            if self.player.health <= 0:
+                self.running = False
+
         alive = [e for e in self.enemies if e.state != 'dead']
         if not alive:
             self.won = self.running = False
             return
 
         for e in alive:
-            dmg = e.update(dt, self.player, self.world, now)
+            dmg = e.update(dt, self.player, self.world, now, self.projectiles)
             if dmg:
                 self.player.health -= dmg
                 self.dmg_flash      = 0.55

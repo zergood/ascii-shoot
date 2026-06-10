@@ -7,7 +7,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from game import World, Player, Enemy, WEAPONS, WORLD_MAP, MAP_W, MAP_H
+from game import World, Player, Enemy, Projectile, WEAPONS, WORLD_MAP, MAP_W, MAP_H
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +139,68 @@ class TestWorld(unittest.TestCase):
         dist, _, _, _ = self.w.cast_ray(2.5, 1.5, 0.0, 60, 120)
         self.assertLess(dist, 25.0)   # must hit something before far clip
         self.assertGreater(dist, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Projectile
+# ---------------------------------------------------------------------------
+
+class TestProjectile(unittest.TestCase):
+
+    def setUp(self):
+        self.world = World()
+
+    def _open_world(self):
+        return World([[0] * 10 for _ in range(10)])
+
+    def test_projectile_moves(self):
+        p   = Player()
+        p.x, p.y = 5.0, 5.0
+        proj = Projectile(2.0, 5.0, Projectile.SPEED, 0.0, 10)
+        proj.update(0.5, p, self.world)   # moves east 3.5 u
+        self.assertGreater(proj.x, 2.0)
+
+    def test_hits_player(self):
+        p = Player()
+        p.x, p.y = 3.0, 5.0
+        proj = Projectile(2.0, 5.0, Projectile.SPEED, 0.0, 10)
+        dmg = proj.update(1.0, p, self.world)   # will reach player
+        self.assertGreater(dmg, 0)
+        self.assertFalse(proj.alive)
+
+    def test_blocked_by_wall(self):
+        p = Player()
+        p.x, p.y = 5.0, 5.0
+        # fire into outer wall (east wall at x≈24)
+        proj = Projectile(20.0, 2.0, Projectile.SPEED, 0.0, 10)
+        for _ in range(30):
+            proj.update(0.1, p, self.world)
+        self.assertFalse(proj.alive)
+
+    def test_miss_does_no_damage(self):
+        p = Player()
+        p.x, p.y = 2.5, 2.5
+        proj = Projectile(5.0, 2.5, Projectile.SPEED, 0.0, 10)  # heading away
+        dmg = proj.update(0.1, p, self.world)
+        self.assertEqual(dmg, 0)
+
+    def test_imp_stats(self):
+        e = Enemy(5.0, 5.0, 'imp')
+        self.assertEqual(e.char, 'I')
+        self.assertTrue(e.ranged)
+        self.assertEqual(e.health, 20)
+
+    def test_imp_shoots_when_chasing(self):
+        world = World()
+        p = Player()
+        p.x, p.y = 7.0, 2.0
+        imp = Enemy(5.0, 2.0, 'imp')
+        imp.state   = 'chase'
+        imp.shot_cd = 0.0
+        projs: list = []
+        imp.update(0.1, p, world, 1000.0, projs)
+        self.assertEqual(len(projs), 1)
+        self.assertIsInstance(projs[0], Projectile)
 
 
 # ---------------------------------------------------------------------------
