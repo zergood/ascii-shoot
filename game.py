@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """ASCII FPS — Doom-style raycasting shooter in the terminal."""
 
-import curses
 import math
 import time
 import random
@@ -231,520 +230,33 @@ class Enemy:
 
 
 # ---------------------------------------------------------------------------
-# Renderer  — owns the curses screen, reads game state, never writes it
-# ---------------------------------------------------------------------------
-
-class Renderer:
-
-    def __init__(self, scr, quality: str = 'normal'):
-        self.scr     = scr
-        self.quality = quality
-        self._unicode = True
-        self._low    = False            # computed in setup()
-        self._hires  = False            # computed in setup()
-        self.shade   = _spr.SHADE_ASCII
-        self._hb     = {}               # (fg_color, bg_color) → pair index
-
-    def setup(self):
-        curses.curs_set(0)
-        curses.noecho()
-        self.scr.nodelay(True)
-        self.scr.keypad(True)
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_RED,     -1)
-        curses.init_pair(2, curses.COLOR_WHITE,   -1)
-        curses.init_pair(3, curses.COLOR_YELLOW,  -1)
-        curses.init_pair(4, curses.COLOR_GREEN,   -1)
-        curses.init_pair(5, curses.COLOR_CYAN,    -1)
-        curses.init_pair(6, curses.COLOR_BLUE,    -1)
-        curses.init_pair(7, curses.COLOR_MAGENTA, -1)
-        try:
-            self.scr.addstr(0, 0, '█')
-            self.scr.erase()
-        except Exception:
-            self._unicode = False
-        # Pre-compute quality flags once
-        self._low   = self.quality == 'low'
-        self._hires = self.quality == 'high' and self._unicode
-        self.shade  = (_spr.SHADE_ASCII if self._low or not self._unicode
-                       else _spr.SHADE_UNI)
-        if self._hires:
-            n = 10
-            for fg in [curses.COLOR_WHITE,  curses.COLOR_YELLOW,
-                       curses.COLOR_GREEN,  curses.COLOR_RED]:
-                for bg in [curses.COLOR_CYAN, curses.COLOR_BLUE]:
-                    curses.init_pair(n, fg, bg)
-                    self._hb[(fg, bg)] = n
-                    n += 1
-
-    # ---- Main render entry -------------------------------------------------
-
-    def render(self, game, now: float):
-        scr = self.scr
-        h, w = scr.getmaxyx()
-        if h < 12 or w < 40:
-            try: scr.addstr(0, 0, "Terminal too small (need 40×12)")
-            except curses.error: pass
-            return
-
-        scr.erase()
-        view_h = h - 3
-        half_h = view_h // 2
-
-        shake_off  = (random.uniform(-game.hit_shake, game.hit_shake)
-                      if game.hit_shake > 0.005 else 0.0)
-        view_angle = game.player.angle + game.recoil + shake_off
-
-        self._draw_sky_floor(scr, view_h, half_h, w)
-
-        z_buf = [999.0] * w
-        self._draw_floor_casting(scr, game.player.x, game.player.y,
-                                 view_angle, view_h, half_h, w)
-        self._draw_walls(scr, game.world, game.player,
-                         view_angle, view_h, half_h, w, z_buf)
-        self._draw_live_enemies(scr, game, z_buf, view_angle,
-                                view_h, half_h, w, now)
-        self._draw_floor_objects(scr, game, z_buf, view_angle,
-                                 view_h, half_h, w)
-        self._draw_crosshair(scr, game.flash, view_h, w)
-        self._draw_gun(scr, game, view_h, w)
-        self._draw_minimap(scr, game, w)
-        self._draw_hud(scr, game, h, w, view_h)
-        self._draw_damage_border(scr, game.dmg_flash, view_h, w)
-        self._draw_messages(scr, game.messages)
-        scr.refresh()
-
-    # ---- Sky / floor background --------------------------------------------
-
-    def _draw_sky_floor(self, scr, view_h, half_h, w):
-        if self._hires:
-            ceil_g  = [' ', ' ', '·', '░']
-            floor_g = ['▒', '░', '·', ' ']
-            for row in range(half_h):
-                idx = min(3, int(row / max(1, half_h) * 4))
-                try: scr.addstr(row, 0, ceil_g[idx] * (w - 1),
-                                curses.color_pair(5))
-                except curses.error: pass
-            for row in range(half_h, view_h):
-                idx = min(3, int((row - half_h) /
-                                 max(1, view_h - half_h) * 4))
-                try: scr.addstr(row, 0, floor_g[idx] * (w - 1),
-                                curses.color_pair(6))
-                except curses.error: pass
-        else:
-            ceil_ch = '·' if self._unicode and not self._low else ' '
-            for row in range(half_h):
-                try: scr.addstr(row, 0, ceil_ch * (w - 1),
-                                curses.color_pair(5))
-                except curses.error: pass
-            for row in range(half_h, view_h):
-                try: scr.addstr(row, 0, ' ' * (w - 1),
-                                curses.color_pair(6))
-                except curses.error: pass
-
-    # ---- Floor casting (perspective grid) ----------------------------------
-
-    def _draw_floor_casting(self, scr, px, py, view_angle,
-                            view_h, half_h, w):
-        if self._low or not self._unicode:
-            return
-        dx  = math.cos(view_angle);  dy  = math.sin(view_angle)
-        plx =  0.66 * dy;            ply = -0.66 * dx
-        rl_x = dx - plx;  rl_y = dy - ply
-        rr_x = dx + plx;  rr_y = dy + ply
-        inv_w  = 1.0 / max(w - 2, 1)
-        stride = 1 if self._hires else 2
-        fattr  = curses.color_pair(6) | curses.A_BOLD
-        for row in range(half_h + 1, view_h):
-            rd  = (view_h * 0.5) / (row - half_h)
-            fx  = px + rd * rl_x;  fy  = py + rd * rl_y
-            fsx = rd * (rr_x - rl_x) * inv_w
-            fsy = rd * (rr_y - rl_y) * inv_w
-            thr = max(0.05, 0.14 - rd * 0.01)
-            cx  = fx;  cy = fy
-            for col in range(0, w - 1, stride):
-                frx = cx - math.floor(cx)
-                fry = cy - math.floor(cy)
-                if (frx < thr or frx > 1.0 - thr or
-                        fry < thr or fry > 1.0 - thr):
-                    try: scr.addstr(row, col, '·', fattr)
-                    except curses.error: pass
-                cx += fsx * stride
-                cy += fsy * stride
-
-    # ---- Walls -------------------------------------------------------------
-
-    def _draw_walls(self, scr, world, player, view_angle,
-                    view_h, half_h, w, z_buf):
-        shade    = self.shade
-        ray_step = 4 if self._low else 1
-        _CP_TO_CLR = {1: curses.COLOR_RED,   2: curses.COLOR_WHITE,
-                      3: curses.COLOR_YELLOW, 4: curses.COLOR_GREEN}
-
-        for col in range(0, w - 1, ray_step):
-            dist, wtype, side, wall_x = world.cast_ray(
-                player.x, player.y, view_angle, col, w)
-
-            wh  = min(int(view_h / dist), view_h)
-            top = max(0,      half_h - wh // 2)
-            bot = min(view_h, half_h + wh // 2)
-
-            si  = min(int(dist / 2.8), len(shade) - 1)
-            ch  = shade[si]
-            cp  = WALL_COLOR.get(wtype, 3)
-            if side == 1:
-                cp = max(1, cp - 1)
-
-            fog  = not self._low and dist > 7.0
-            attr = (curses.color_pair(cp)
-                    | (curses.A_BOLD if dist < 2.5 else
-                       curses.A_DIM  if fog else 0))
-
-            wall_h = max(1, bot - top)
-            for c in range(col, min(col + ray_step, w - 1)):
-                z_buf[c] = dist
-                for row in range(top, bot):
-                    if not self._low and self._unicode:
-                        row_f    = (row - top) / wall_h
-                        brick_r  = int(row_f * 3)
-                        offset   = 0.5 if brick_r % 2 else 0.0
-                        mortar_x = ((wall_x + offset) * 2) % 1.0
-                        mortar_y = (row_f * 3) % 1.0
-                        is_mortar = (mortar_y < 0.10 or
-                                     mortar_x < 0.07 or mortar_x > 0.93)
-                        tex = shade[min(len(shade)-1, si+1)] if is_mortar else ch
-                    else:
-                        tex = ch
-                    try: scr.addstr(row, c, tex, attr)
-                    except curses.error: pass
-
-            if self._hires:
-                wh_f  = min(view_h / dist, view_h * 2.0)
-                top_f = half_h - wh_f / 2
-                bot_f = half_h + wh_f / 2
-                top_i, bot_i   = int(top_f), int(bot_f)
-                top_fr, bot_fr = top_f - top_i, bot_f - bot_i
-                wc = _CP_TO_CLR.get(cp, curses.COLOR_YELLOW)
-                if 0 <= top_i < view_h and top_fr > 0.5:
-                    p = self._hb.get((wc, curses.COLOR_CYAN), 5)
-                    try: scr.addstr(top_i, col, '▄', curses.color_pair(p))
-                    except curses.error: pass
-                if 0 <= bot_i < view_h and 0 < bot_fr < 0.5:
-                    p = self._hb.get((wc, curses.COLOR_BLUE), 6)
-                    try: scr.addstr(bot_i, col, '▀', curses.color_pair(p))
-                    except curses.error: pass
-
-    # ---- Live enemy sprites ------------------------------------------------
-
-    def _draw_live_enemies(self, scr, game, z_buf, view_angle,
-                           view_h, half_h, w, now):
-        p     = game.player
-        frame = int(now * 5) % 2
-        dx    = math.cos(view_angle);  dy = math.sin(view_angle)
-        px    =  0.66 * dy;            py = -0.66 * dx
-        inv   = 1.0 / (px * dy - dx * py)
-
-        def _proj(ox, oy):
-            ex, ey = ox - p.x, oy - p.y
-            tx = inv * ( dy * ex - dx * ey)
-            tz = inv * (-py * ex + px * ey)
-            return tx, tz
-
-        visible = []
-        for e in game.enemies:
-            if e.state == 'dead':
-                continue
-            tx, tz = _proj(e.x, e.y)
-            if tz <= 0.1:
-                continue
-            sx = int((w / 2) * (1.0 + tx / tz))
-            sh = min(abs(int(view_h / tz)), view_h)
-            visible.append((tz, e, sx, sh))
-
-        max_sw = max(1, w // 8)
-        for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
-            sw   = min(max(1, sh // 2), max_sw)
-            top  = half_h - sh // 2
-            attr = curses.color_pair(e.cpair) | curses.A_BOLD
-            for cx_off in range(-sw // 2, sw // 2 + 1):
-                col = sx + cx_off
-                if col < 0 or col >= w - 1 or z_buf[col] <= depth:
-                    continue
-                for row_off in range(sh):
-                    row = top + row_off
-                    if row < 0 or row >= view_h:
-                        continue
-                    ch = _spr.enemy_char(e.kind, row_off / sh, frame, e.state)
-                    if ch is None:
-                        continue
-                    try: scr.addstr(row, col, ch, attr)
-                    except curses.error: pass
-
-    # ---- Floor objects (corpses + pickups) ---------------------------------
-
-    def _draw_floor_objects(self, scr, game, z_buf, view_angle,
-                            view_h, half_h, w):
-        p   = game.player
-        dx  = math.cos(view_angle);  dy = math.sin(view_angle)
-        px  =  0.66 * dy;            py = -0.66 * dx
-        inv = 1.0 / (px * dy - dx * py)
-
-        def _proj(ox, oy):
-            ex, ey = ox - p.x, oy - p.y
-            tx = inv * ( dy * ex - dx * ey)
-            tz = inv * (-py * ex + px * ey)
-            return tx, tz
-
-        objs = (
-            [(cx, cy, '%', curses.color_pair(1))
-             for cx, cy in game.corpses] +
-            [(px2, py2, '+' if k == 'hp' else '*',
-              curses.color_pair(4) if k == 'hp' else curses.color_pair(3))
-             for px2, py2, k in game.pickups]
-        )
-        for ox, oy, fch, fattr in objs:
-            tx, tz = _proj(ox, oy)
-            if tz <= 0.1:
-                continue
-            sx  = int((w / 2) * (1.0 + tx / tz))
-            sh  = min(abs(int(view_h / tz)), view_h)
-            row = min(view_h - 1, half_h + sh // 3)
-            if 0 <= sx < w - 1 and z_buf[sx] > tz:
-                try: scr.addstr(row, sx, fch, fattr | curses.A_BOLD)
-                except curses.error: pass
-
-    # ---- Crosshair ---------------------------------------------------------
-
-    def _draw_crosshair(self, scr, flash, view_h, w):
-        cy, cx = view_h // 2, w // 2
-        xcol = (curses.color_pair(7) | curses.A_BOLD
-                if flash > 0 else curses.color_pair(2))
-        try:
-            scr.addstr(cy,     cx - 1, '-+-', xcol)
-            scr.addstr(cy - 1, cx,     '|',   xcol)
-            scr.addstr(cy + 1, cx,     '|',   xcol)
-        except curses.error:
-            pass
-
-    # ---- Gun sprite --------------------------------------------------------
-
-    def _draw_gun(self, scr, game, view_h, w):
-        if self._low:
-            return
-        cx     = w // 2
-        firing = game.flash > 0
-        col    = curses.color_pair(3) | curses.A_BOLD
-
-        bob = 0
-        if game._is_moving and not firing:
-            bob = round(math.sin(game._walk_timer * 8.0) * 1.3)
-
-        gun_lines = _spr.GUN_SPRITES[game.player.weapon]
-        if firing:
-            fi = int((0.12 - game.flash) / 0.04) % len(_spr.GUN_FLASH)
-            try: scr.addstr(view_h - 5, cx - 4,
-                            _spr.GUN_FLASH[fi],
-                            curses.color_pair(7) | curses.A_BOLD)
-            except curses.error: pass
-            base_row = view_h - 4
-        else:
-            base_row = view_h - 3
-
-        base_row += bob
-        for i, line in enumerate(gun_lines):
-            try: scr.addstr(base_row + i, cx - 4, line, col)
-            except curses.error: pass
-
-    # ---- Minimap -----------------------------------------------------------
-
-    def _draw_minimap(self, scr, game, w):
-        size  = 13
-        ox    = w - size - 2
-        oy    = 0
-        scale = size / MAP_W
-
-        for my in range(size):
-            for mx in range(size):
-                gx = min(MAP_W - 1, int(mx / scale))
-                gy = min(MAP_H - 1, int(my / scale))
-                ch    = '#' if game.world.grid[gy][gx] else ' '
-                color = curses.color_pair(3) if game.world.grid[gy][gx] else 0
-                try: scr.addstr(oy + my, ox + mx, ch, color)
-                except curses.error: pass
-
-        for px2, py2, kind in game.pickups:
-            mx = int(px2 * scale);  my = int(py2 * scale)
-            if 0 <= mx < size and 0 <= my < size:
-                ch    = '+' if kind == 'hp' else '*'
-                color = (curses.color_pair(4) if kind == 'hp'
-                         else curses.color_pair(3))
-                try: scr.addstr(oy + my, ox + mx, ch, color)
-                except curses.error: pass
-
-        for cx2, cy2 in game.corpses:
-            mx = int(cx2 * scale);  my = int(cy2 * scale)
-            if 0 <= mx < size and 0 <= my < size:
-                try: scr.addstr(oy + my, ox + mx, 'x', curses.color_pair(1))
-                except curses.error: pass
-
-        ppx = int(game.player.x * scale)
-        ppy = int(game.player.y * scale)
-        if 0 <= ppx < size and 0 <= ppy < size:
-            try: scr.addstr(oy + ppy, ox + ppx, '@',
-                            curses.color_pair(4) | curses.A_BOLD)
-            except curses.error: pass
-
-        fov_half = math.atan(0.66)
-        dot_ch   = '·' if self._unicode else '.'
-        for dist in (2.0, 3.5, 5.0):
-            for ao in (-fov_half, fov_half):
-                fx = int((game.player.x +
-                          math.cos(game.player.angle + ao) * dist) * scale)
-                fy = int((game.player.y +
-                          math.sin(game.player.angle + ao) * dist) * scale)
-                if 0 <= fx < size and 0 <= fy < size:
-                    try: scr.addstr(oy + fy, ox + fx, '.', curses.color_pair(5))
-                    except curses.error: pass
-        for dist in (1.5, 2.5, 3.5):
-            fx = int((game.player.x +
-                      math.cos(game.player.angle) * dist) * scale)
-            fy = int((game.player.y +
-                      math.sin(game.player.angle) * dist) * scale)
-            if 0 <= fx < size and 0 <= fy < size and (fx != ppx or fy != ppy):
-                try: scr.addstr(oy + fy, ox + fx, dot_ch,
-                                curses.color_pair(4) | curses.A_BOLD)
-                except curses.error: pass
-
-        for e in game.enemies:
-            if e.state == 'dead':
-                continue
-            ex = int(e.x * scale);  ey = int(e.y * scale)
-            if 0 <= ex < size and 0 <= ey < size:
-                try: scr.addstr(oy + ey, ox + ex, '!', curses.color_pair(1))
-                except curses.error: pass
-
-    # ---- HUD ---------------------------------------------------------------
-
-    def _draw_hud(self, scr, game, h, w, view_h):
-        p      = game.player
-        y      = view_h
-        hp_pct = max(0, p.health) / 100.0
-        bw     = 12
-        filled = int(hp_pct * bw)
-        bar    = ('█' * filled + '░' * (bw - filled) if self._unicode
-                  else '#' * filled + '-' * (bw - filled))
-        hp_col = curses.color_pair(1) if hp_pct < 0.3 else curses.color_pair(4)
-        sep    = '─' * (w - 1) if self._unicode else '-' * (w - 1)
-        alive  = sum(1 for e in game.enemies if e.state != 'dead')
-        wdef   = WEAPONS[p.weapon]
-        ammo_n = p.ammo.get(wdef['ammo_type'], 0)
-        wname  = f'[{p.weapon+1}]{wdef["name"]}'
-        try:
-            scr.addstr(y,     0,  sep[:w-1], curses.color_pair(3))
-            scr.addstr(y + 1, 1,  f'HP[{bar}]{p.health:3d}',
-                       hp_col | curses.A_BOLD)
-            scr.addstr(y + 1, 22, f'{wname}:{ammo_n:3d}',
-                       curses.color_pair(3) | curses.A_BOLD)
-            scr.addstr(y + 1, 38, f'SCORE:{p.score}',
-                       curses.color_pair(4) | curses.A_BOLD)
-            scr.addstr(y + 2, 1,  f'ENEMIES:{alive:2d}/{len(game.enemies)}',
-                       curses.color_pair(1))
-            scr.addstr(y + 2, 18,
-                       'WASD:move ←→:turn SPC:fire 1-3:weapon Q:quit',
-                       curses.color_pair(6))
-        except curses.error:
-            pass
-
-    # ---- Damage border -----------------------------------------------------
-
-    def _draw_damage_border(self, scr, dmg_flash, view_h, w):
-        if dmg_flash <= 0:
-            return
-        t    = dmg_flash / 0.55
-        cols = max(1, int(t * 5))
-        rows = max(1, int(t * 3))
-        side = '▌' if self._unicode else '|'
-        top_c = '▄' if self._unicode else '-'
-        attr  = curses.color_pair(1) | curses.A_BOLD
-        for row in range(view_h):
-            for c in range(cols):
-                try:
-                    scr.addstr(row, c,         side, attr)
-                    scr.addstr(row, w - 2 - c, side, attr)
-                except curses.error: pass
-        strip = top_c * (w - 1)
-        for r in range(rows):
-            try:
-                scr.addstr(r,              0, strip[:w-1], attr)
-                scr.addstr(view_h - 1 - r, 0, strip[:w-1], attr)
-            except curses.error: pass
-
-    # ---- Messages ----------------------------------------------------------
-
-    def _draw_messages(self, scr, messages):
-        for i, (msg, _) in enumerate(messages[-3:]):
-            try: scr.addstr(1 + i, 1, msg[:38],
-                            curses.color_pair(7) | curses.A_BOLD)
-            except curses.error: pass
-
-    # ---- End screen --------------------------------------------------------
-
-    def end_screen(self, game):
-        scr = self.scr
-        h, w = scr.getmaxyx()
-        scr.erase()
-        if game.won:
-            title = "  YOU WIN!  "
-            color = curses.color_pair(4) | curses.A_BOLD
-        else:
-            title = "  GAME OVER  "
-            color = curses.color_pair(1) | curses.A_BOLD
-        lines = [
-            title,
-            f"Final score: {game.player.score}",
-            (f"Kills: {sum(1 for e in game.enemies if e.state == 'dead')}"
-             f"/{len(game.enemies)}"),
-            "",
-            "Press any key to exit...",
-        ]
-        cy = h // 2 - len(lines) // 2
-        for i, line in enumerate(lines):
-            try: scr.addstr(cy + i, w // 2 - len(line) // 2, line, color)
-            except curses.error: pass
-        scr.refresh()
-        scr.nodelay(False)
-        scr.getch()
-
-
-# ---------------------------------------------------------------------------
 # Game  — coordinator, no curses code
 # ---------------------------------------------------------------------------
 
 class Game:
 
-    def __init__(self, stdscr, quality: str = 'normal'):
+    def __init__(self, renderer, input_handler):
         self.world   = World()
         self.player  = Player()
         self.enemies = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
         self.pickups = list(PICKUP_SPAWNS)
-        self.corpses = []
+        self.corpses  = []
         self.messages = []
         self.running  = True
         self.won      = False
 
         # Visual-effect timers — written by game logic, read by Renderer
-        self.flash      = 0.0
-        self.shoot_cd   = 0.0
-        self.dmg_flash  = 0.0
-        self.recoil     = 0.0
-        self.hit_shake  = 0.0
+        self.flash       = 0.0
+        self.shoot_cd    = 0.0
+        self.dmg_flash   = 0.0
+        self.recoil      = 0.0
+        self.hit_shake   = 0.0
         self._is_moving  = False
         self._walk_timer = 0.0
 
-        self.renderer = Renderer(stdscr, quality)
-        self.renderer.setup()
-        self.last_t   = time.time()
+        self.renderer      = renderer
+        self._input_handler = input_handler
+        self.last_t        = time.time()
 
     def _msg(self, text: str):
         self.messages.append((text, time.time() + 2.5))
@@ -752,14 +264,10 @@ class Game:
     # ---- Input -------------------------------------------------------------
 
     def _input(self, dt: float):
-        keys: set[int] = set()
-        while True:
-            k = self.renderer.scr.getch()
-            if k == -1:
-                break
-            keys.add(k)
+        import engine as _eng
+        keys, quit_req = self._input_handler.process_events()
 
-        if ord('q') in keys or 27 in keys:
+        if quit_req:
             self.running = False
             return
 
@@ -769,39 +277,37 @@ class Game:
         dx  = math.cos(p.angle)
         dy  = math.sin(p.angle)
 
-        if ord('w') in keys or curses.KEY_UP in keys:
+        if keys & _eng.MOVE_FORWARD:
             nx, ny = p.x + dx * spd, p.y + dy * spd
             if self.world.can_step(nx, p.y): p.x = nx
             if self.world.can_step(p.x, ny): p.y = ny
 
-        if ord('s') in keys or curses.KEY_DOWN in keys:
+        if keys & _eng.MOVE_BACK:
             nx, ny = p.x - dx * spd, p.y - dy * spd
             if self.world.can_step(nx, p.y): p.x = nx
             if self.world.can_step(p.x, ny): p.y = ny
 
-        if ord('a') in keys:
+        if keys & _eng.STRAFE_LEFT:
             nx, ny = p.x - dy * spd, p.y + dx * spd
             if self.world.can_step(nx, p.y): p.x = nx
             if self.world.can_step(p.x, ny): p.y = ny
 
-        if ord('d') in keys:
+        if keys & _eng.STRAFE_RIGHT:
             nx, ny = p.x + dy * spd, p.y - dx * spd
             if self.world.can_step(nx, p.y): p.x = nx
             if self.world.can_step(p.x, ny): p.y = ny
 
-        if curses.KEY_LEFT  in keys: p.angle += rot
-        if curses.KEY_RIGHT in keys: p.angle -= rot
+        if keys & _eng.TURN_LEFT:  p.angle += rot
+        if keys & _eng.TURN_RIGHT: p.angle -= rot
 
-        self._is_moving = any(k in keys for k in (
-            ord('w'), ord('s'), ord('a'), ord('d'),
-            curses.KEY_UP, curses.KEY_DOWN,
-        ))
+        self._is_moving = bool(keys & (_eng.MOVE_FORWARD | _eng.MOVE_BACK
+                                       | _eng.STRAFE_LEFT | _eng.STRAFE_RIGHT))
 
-        if ord(' ') in keys or ord('f') in keys:
+        if keys & _eng.FIRE:
             self._shoot()
 
-        for idx, k in enumerate((ord('1'), ord('2'), ord('3'))):
-            if k in keys:
+        for sym, idx in _eng.WEAPON_KEYS.items():
+            if sym in keys:
                 p.weapon = idx
 
     # ---- Shooting ----------------------------------------------------------
@@ -911,7 +417,9 @@ class Game:
 
     # ---- Main loop ---------------------------------------------------------
 
-    def run(self):
+    def run(self, ctx):
+        """Run the game loop. *ctx* is the tcod Context for presenting frames."""
+        import engine as _eng
         target = 1.0 / 35.0
         while self.running:
             now = time.time()
@@ -920,26 +428,75 @@ class Game:
             self._input(dt)
             self.update(dt, now)
             self.renderer.render(self, now)
+            ctx.present(self.renderer.con)
             wait = target - (time.time() - now)
             if wait > 0:
                 time.sleep(wait)
-        self.renderer.end_screen(self)
+
+
+# ---------------------------------------------------------------------------
+# Highscores helper
+# ---------------------------------------------------------------------------
+
+import os as _os
+
+_SCORE_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                             'highscore.txt')
+
+def load_scores() -> list[int]:
+    try:
+        with open(_SCORE_FILE) as f:
+            return [int(l.strip()) for l in f if l.strip().isdigit()][:10]
+    except Exception:
+        return []
+
+def save_score(score: int) -> None:
+    scores = sorted(load_scores() + [score], reverse=True)[:10]
+    try:
+        with open(_SCORE_FILE, 'w') as f:
+            f.write('\n'.join(str(s) for s in scores))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(stdscr):
-    quality = 'normal'
-    for arg in sys.argv[1:]:
-        if arg in ('-l', '--low'):    quality = 'low'
-        elif arg in ('-H', '--high'): quality = 'high'
-    Game(stdscr, quality).run()
+def main():
+    import engine as _eng
+
+    with _eng.make_context() as ctx:
+        console  = _eng.make_console()
+        renderer = _eng.Renderer(console)
+        inp      = _eng.InputHandler()
+
+        while True:
+            action = renderer.menu_screen(ctx)
+            if action == 'quit':
+                break
+            if action == 'scores':
+                scores = load_scores()
+                # reuse end_screen with a dummy won=True game for display
+                # (simplest approach — just show scores via end_screen)
+                class _Stub:
+                    won = True
+                    player = type('P', (), {'score': 0})()
+                    enemies = []
+                _stub = _Stub()
+                renderer.end_screen(_stub, ctx, scores)
+                continue
+
+            # --- Play ---
+            game = Game(renderer, inp)
+            game.run(ctx)
+            save_score(game.player.score)
+            renderer.end_screen(game, ctx, load_scores())
+            inp.clear()
 
 
 if __name__ == '__main__':
     try:
-        curses.wrapper(main)
-    except KeyboardInterrupt:
+        main()
+    except (KeyboardInterrupt, SystemExit):
         pass
