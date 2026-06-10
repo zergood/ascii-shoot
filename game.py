@@ -24,11 +24,11 @@ WORLD_MAP = [
     [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,1],
     [1,0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0,1],
     [1,0,0,0,0,0,0,0,0,3,0,0,3,0,0,0,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,5,0,0,3,0,0,0,0,0,0,0,0,0,0,1],
     [1,0,0,0,0,0,0,0,0,3,0,0,3,0,0,0,0,0,0,0,0,0,0,1],
     [1,0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0,0,0,1],
     [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
-    [1,0,0,0,0,2,2,2,2,0,0,0,0,0,0,4,4,4,4,0,0,0,0,1],
+    [1,0,0,0,0,2,2,5,2,0,0,0,0,0,0,4,4,5,4,0,0,0,0,1],
     [1,0,0,0,0,2,0,0,2,0,0,0,0,0,0,4,0,0,4,0,0,0,0,1],
     [1,0,0,0,0,2,0,0,2,0,0,0,0,0,0,4,0,0,4,0,0,0,0,1],
     [1,0,0,0,0,2,2,2,2,0,0,0,0,0,0,4,4,4,4,0,0,0,0,1],
@@ -81,15 +81,26 @@ class World:
     """Map grid plus collision and raycasting helpers."""
 
     def __init__(self, grid=None):
-        self.grid = grid if grid is not None else WORLD_MAP
-        self.h    = len(self.grid)
-        self.w    = len(self.grid[0]) if self.h else 0
+        self.grid        = grid if grid is not None else WORLD_MAP
+        self.h           = len(self.grid)
+        self.w           = len(self.grid[0]) if self.h else 0
+        self._open_doors: set[tuple[int, int]] = set()
+
+    def toggle_door(self, x: int, y: int) -> None:
+        key = (x, y)
+        if key in self._open_doors:
+            self._open_doors.discard(key)
+        else:
+            self._open_doors.add(key)
 
     def is_wall(self, x: float, y: float) -> bool:
         ix, iy = int(x), int(y)
         if ix < 0 or ix >= self.w or iy < 0 or iy >= self.h:
             return True
-        return self.grid[iy][ix] != 0
+        cell = self.grid[iy][ix]
+        if cell == 5:
+            return (ix, iy) not in self._open_doors
+        return cell != 0
 
     def cell_type(self, x: float, y: float) -> int:
         ix, iy = int(x), int(y)
@@ -314,9 +325,27 @@ class Game:
         if keys & _eng.FIRE:
             self._shoot()
 
+        if self._input_handler.just_pressed(_eng.USE):
+            self._use_door()
+
         for sym, idx in _eng.WEAPON_KEYS.items():
             if sym in keys:
                 p.weapon = idx
+
+    # ---- Door interaction --------------------------------------------------
+
+    def _use_door(self):
+        p    = self.player
+        dx_  = math.cos(p.angle)
+        dy_  = math.sin(p.angle)
+        for reach in (1.0, 1.5):
+            door_ix = int(p.x + dx_ * reach)
+            door_iy = int(p.y + dy_ * reach)
+            if self.world.cell_type(door_ix, door_iy) == 5:
+                self.world.toggle_door(door_ix, door_iy)
+                opened = (door_ix, door_iy) in self.world._open_doors
+                self._msg('[E] Door ' + ('opened' if opened else 'closed'))
+                return
 
     # ---- Shooting ----------------------------------------------------------
 

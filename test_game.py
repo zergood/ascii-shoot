@@ -142,6 +142,48 @@ class TestWorld(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Doors
+# ---------------------------------------------------------------------------
+
+class TestDoors(unittest.TestCase):
+
+    def setUp(self):
+        self.world = World([
+            [1, 1, 1],
+            [1, 5, 1],
+            [1, 1, 1],
+        ])
+
+    def test_closed_door_is_wall(self):
+        self.assertTrue(self.world.is_wall(1.5, 1.5))
+
+    def test_open_door_passable(self):
+        self.world.toggle_door(1, 1)
+        self.assertFalse(self.world.is_wall(1.5, 1.5))
+
+    def test_toggle_twice_closes(self):
+        self.world.toggle_door(1, 1)
+        self.world.toggle_door(1, 1)
+        self.assertTrue(self.world.is_wall(1.5, 1.5))
+
+    def test_can_step_through_open_door(self):
+        self.world.toggle_door(1, 1)
+        self.assertTrue(self.world.can_step(1.5, 1.5, r=0.1))
+
+    def test_cannot_step_through_closed_door(self):
+        self.assertFalse(self.world.can_step(1.5, 1.5, r=0.1))
+
+    def test_cell_type_returns_5_for_door(self):
+        self.assertEqual(self.world.cell_type(1.5, 1.5), 5)
+
+    def test_open_doors_independent_per_world(self):
+        w2 = World(self.world.grid)
+        self.world.toggle_door(1, 1)
+        # w2 shares grid data but has its own _open_doors
+        self.assertTrue(w2.is_wall(1.5, 1.5))
+
+
+# ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
 

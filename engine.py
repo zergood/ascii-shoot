@@ -333,8 +333,12 @@ class Renderer:
                 gy = min(mh - 1, int(my / scale))
                 cell = world.grid[gy][gx]
                 if cell:
-                    ch = '#' if cell != 5 else '+'
-                    fg = CYAN if cell == 5 else YELLOW
+                    if cell == 5:
+                        is_open = (gx, gy) in world._open_doors
+                        ch = '/' if is_open else '+'
+                        fg = GREEN if is_open else CYAN
+                    else:
+                        ch, fg = '#', YELLOW
                     try:
                         self.con.print(ox + mx, oy + my, ch, fg=fg)
                     except Exception:
