@@ -416,12 +416,12 @@ class Renderer:
         try:
             self.con.print(0,  y,     sep[:w-1],                  fg=YELLOW)
             self.con.print(1,  y + 1, f'HP[{bar}]{p.health:3d}',  fg=hp_fg)
-            self.con.print(22, y + 1, wname,                       fg=YELLOW)
-            self.con.print(33, y + 1, f'SCORE:{p.score}',          fg=GREEN)
+            self.con.print(23, y + 1, wname,                       fg=YELLOW)
+            self.con.print(35, y + 1, f'SCORE:{p.score}',          fg=GREEN)
             if combo_str:
-                self.con.print(52, y + 1, combo_str,               fg=MAGENTA)
+                self.con.print(54, y + 1, combo_str,               fg=MAGENTA)
             if pause_str:
-                self.con.print(68, y + 1, pause_str,               fg=CYAN)
+                self.con.print(70, y + 1, pause_str,               fg=CYAN)
             self.con.print(1,  y + 2,
                            f'BULLET:{bullets:3d}  SHELL:{shells:2d}',
                            fg=YELLOW)
