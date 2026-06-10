@@ -6,6 +6,7 @@ import math
 import time
 import random
 import sys
+import sprites as _spr
 
 # ---------------------------------------------------------------------------
 # Level data
@@ -55,8 +56,9 @@ PICKUP_SPAWNS = [
     (5.5, 20.5, 'ammo'), (17.5, 11.5, 'ammo'),
 ]
 
-SHADE_UNI   = ['█', '▓', '▒', '░', '·']
-SHADE_ASCII = ['#', '@', '+', ':', '.']
+# Re-export shading palettes so existing importers (tests) still work
+SHADE_UNI   = _spr.SHADE_UNI
+SHADE_ASCII = _spr.SHADE_ASCII
 WALL_COLOR  = {1: 3, 2: 4, 3: 3, 4: 1}
 
 WEAPONS = [
@@ -238,10 +240,10 @@ class Renderer:
         self.scr     = scr
         self.quality = quality
         self._unicode = True
-        self._low    = False   # computed in setup()
-        self._hires  = False   # computed in setup()
-        self.shade   = SHADE_ASCII
-        self._hb     = {}      # (fg_color, bg_color) → pair index
+        self._low    = False            # computed in setup()
+        self._hires  = False            # computed in setup()
+        self.shade   = _spr.SHADE_ASCII
+        self._hb     = {}               # (fg_color, bg_color) → pair index
 
     def setup(self):
         curses.curs_set(0)
@@ -265,7 +267,8 @@ class Renderer:
         # Pre-compute quality flags once
         self._low   = self.quality == 'low'
         self._hires = self.quality == 'high' and self._unicode
-        self.shade  = SHADE_ASCII if self._low or not self._unicode else SHADE_UNI
+        self.shade  = (_spr.SHADE_ASCII if self._low or not self._unicode
+                       else _spr.SHADE_UNI)
         if self._hires:
             n = 10
             for fg in [curses.COLOR_WHITE,  curses.COLOR_YELLOW,
@@ -472,13 +475,9 @@ class Renderer:
                     row = top + row_off
                     if row < 0 or row >= view_h:
                         continue
-                    ry = row_off / sh
-                    if   ry < 0.18: ch = 'O'
-                    elif ry < 0.22: ch = '-'
-                    elif ry < 0.65: ch = e.char
-                    elif ry < 0.80:
-                        ch = ('\\' if frame else '/') if e.state == 'chase' else '|'
-                    else:           continue
+                    ch = _spr.enemy_char(e.kind, row_off / sh, frame, e.state)
+                    if ch is None:
+                        continue
                     try: scr.addstr(row, col, ch, attr)
                     except curses.error: pass
 
@@ -530,13 +529,6 @@ class Renderer:
 
     # ---- Gun sprite --------------------------------------------------------
 
-    # weapon sprites: each row is 9 chars, centred with offset -4
-    _GUN_SPRITES = [
-        ['   ___   ', '  /---\\  ', '   |_|   '],   # Pistol
-        [' ======= ', '/=======\\', '|=======|'],   # Shotgun
-        ['  _____  ', ' /-----\\=', ' \\_____/ '],   # Rifle
-    ]
-
     def _draw_gun(self, scr, game, view_h, w):
         if self._low:
             return
@@ -548,12 +540,12 @@ class Renderer:
         if game._is_moving and not firing:
             bob = round(math.sin(game._walk_timer * 8.0) * 1.3)
 
-        gun_lines = self._GUN_SPRITES[game.player.weapon]
+        gun_lines = _spr.GUN_SPRITES[game.player.weapon]
         if firing:
-            flashes = ['  *!*!*  ', '   *!*   ', '    !    ']
-            fi = int((0.12 - game.flash) / 0.04) % len(flashes)
+            fi = int((0.12 - game.flash) / 0.04) % len(_spr.GUN_FLASH)
             try: scr.addstr(view_h - 5, cx - 4,
-                            flashes[fi], curses.color_pair(7) | curses.A_BOLD)
+                            _spr.GUN_FLASH[fi],
+                            curses.color_pair(7) | curses.A_BOLD)
             except curses.error: pass
             base_row = view_h - 4
         else:
