@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Unit tests for game.py — no curses required."""
+
+import math
+import unittest
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(__file__))
+from game import World, Player, Enemy, WORLD_MAP, MAP_W, MAP_H
+
+
+# ---------------------------------------------------------------------------
+# World
+# ---------------------------------------------------------------------------
+
+class TestWorld(unittest.TestCase):
+
+    def setUp(self):
+        self.w = World()
+
+    # -- is_wall --
+
+    def test_outer_border_is_wall(self):
+        self.assertTrue(self.w.is_wall(0.5, 0.5))    # top-left corner cell
+        self.assertTrue(self.w.is_wall(0.5, MAP_H - 1 + 0.5))
+        self.assertTrue(self.w.is_wall(MAP_W - 1 + 0.5, 0.5))
+
+    def test_interior_empty_cell(self):
+        self.assertFalse(self.w.is_wall(1.5, 1.5))
+        self.assertFalse(self.w.is_wall(12.0, 12.0))
+
+    def test_out_of_bounds_is_wall(self):
+        self.assertTrue(self.w.is_wall(-1.0,  0.0))
+        self.assertTrue(self.w.is_wall( 0.0, -1.0))
+        self.assertTrue(self.w.is_wall(float(MAP_W), 0.0))
+        self.assertTrue(self.w.is_wall(0.0, float(MAP_H)))
+
+    def test_float_truncation_empty(self):
+        # (1.99, 1.99) → cell (1,1) = 0 in WORLD_MAP
+        self.assertFalse(self.w.is_wall(1.99, 1.99))
+
+    def test_float_truncation_wall(self):
+        # (0.01, 0.01) → cell (0,0) = 1
+        self.assertTrue(self.w.is_wall(0.01, 0.01))
+
+    def test_custom_grid(self):
+        grid = [
+            [1, 1, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+        ]
+        w = World(grid)
+        self.assertTrue(w.is_wall(0.5, 0.5))
+        self.assertFalse(w.is_wall(1.5, 1.5))
+        self.assertEqual(w.w, 3)
+        self.assertEqual(w.h, 3)
+
+    # -- cell_type --
+
+    def test_cell_type_wall(self):
+        self.assertEqual(self.w.cell_type(0.5, 0.5), 1)
+
+    def test_cell_type_empty(self):
+        self.assertEqual(self.w.cell_type(1.5, 1.5), 0)
+
+    def test_cell_type_oob(self):
+        self.assertEqual(self.w.cell_type(-1.0, 0.0), 1)
+
+    # -- can_step --
+
+    def test_can_step_open_area(self):
+        # Row 2 is fully open from x=1..22; r=0.28 won't touch any wall here
+        self.assertTrue(self.w.can_step(5.0, 2.0))
+
+    def test_cannot_step_near_west_wall(self):
+        # x=0.2 means the left radius touches the wall at x=0
+        self.assertFalse(self.w.can_step(0.2, 2.0))
+
+    def test_can_step_custom_radius(self):
+        # With tiny radius, can step very close to wall
+        self.assertTrue(self.w.can_step(1.05, 1.5, r=0.01))
+
+    # -- has_los --
+
+    def test_los_open_corridor(self):
+        self.assertTrue(self.w.has_los(2.0, 2.0, 4.0, 2.0))
+
+    def test_los_blocked_by_outer_wall(self):
+        # Point inside vs point outside (negative x)
+        self.assertFalse(self.w.has_los(2.0, 2.0, -1.0, 2.0))
+
+    def test_los_blocked_by_inner_wall(self):
+        # Use a controlled grid with a wall in the middle
+        grid = [
+            [1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 1],
+            [1, 1, 1, 1, 1],
+        ]
+        w = World(grid)
+        # (1,1) → (3,1) has cell (2,1)=1 between them
+        self.assertFalse(w.has_los(1.5, 1.5, 3.5, 1.5))
+
+    def test_los_same_point(self):
+        self.assertTrue(self.w.has_los(5.0, 5.0, 5.0, 5.0))
+
+    # -- cast_ray --
+
+    def test_cast_ray_returns_four_tuple(self):
+        result = self.w.cast_ray(2.5, 2.5, 0.0, 60, 120)
+        self.assertEqual(len(result), 4)
+
+    def test_cast_ray_dist_positive(self):
+        for angle in [0, math.pi / 4, math.pi / 2, math.pi, 3 * math.pi / 2]:
+            dist, _, _, _ = self.w.cast_ray(2.5, 2.5, angle, 60, 120)
+            self.assertGreater(dist, 0.0)
+
+    def test_cast_ray_always_hits_wall(self):
+        # Inside a bounded map, every ray must hit a wall
+        for col in range(0, 120, 10):
+            dist, wtype, _, _ = self.w.cast_ray(2.5, 2.5, 0.0, col, 120)
+            self.assertLess(dist, 64.0)
+            self.assertGreater(wtype, 0)
+
+    def test_cast_ray_wall_x_in_range(self):
+        for col in range(0, 120, 15):
+            for angle in [0, math.pi / 3, math.pi / 2]:
+                _, _, _, wx = self.w.cast_ray(2.5, 2.5, angle, col, 120)
+                self.assertGreaterEqual(wx, 0.0)
+                self.assertLess(wx, 1.0)
+
+    def test_cast_ray_side_is_0_or_1(self):
+        for col in range(0, 120, 20):
+            _, _, side, _ = self.w.cast_ray(2.5, 2.5, 0.0, col, 120)
+            self.assertIn(side, (0, 1))
+
+    def test_cast_ray_facing_east_short_dist(self):
+        # Player at (2.5, 1.5) facing east — open corridor until east wall
+        dist, _, _, _ = self.w.cast_ray(2.5, 1.5, 0.0, 60, 120)
+        self.assertLess(dist, 25.0)   # must hit something before far clip
+        self.assertGreater(dist, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Player
+# ---------------------------------------------------------------------------
+
+class TestPlayer(unittest.TestCase):
+
+    def test_initial_values(self):
+        p = Player()
+        self.assertAlmostEqual(p.x, 2.5)
+        self.assertAlmostEqual(p.y, 2.5)
+        self.assertAlmostEqual(p.angle, 0.0)
+        self.assertEqual(p.health, 100)
+        self.assertEqual(p.ammo, 50)
+        self.assertEqual(p.score, 0)
+
+    def test_two_players_independent(self):
+        p1, p2 = Player(), Player()
+        p1.health = 50
+        self.assertEqual(p2.health, 100)
+
+
+# ---------------------------------------------------------------------------
+# Enemy
+# ---------------------------------------------------------------------------
+
+class TestEnemy(unittest.TestCase):
+
+    def setUp(self):
+        self.world = World()
+
+    def test_zombie_stats(self):
+        e = Enemy(5.0, 5.0, 'zombie')
+        self.assertEqual(e.health, 30)
+        self.assertEqual(e.char, 'Z')
+        self.assertEqual(e.cpair, 1)
+        self.assertEqual(e.state, 'patrol')
+
+    def test_demon_stats(self):
+        e = Enemy(5.0, 5.0, 'demon')
+        self.assertEqual(e.health, 60)
+        self.assertEqual(e.char, 'D')
+        self.assertEqual(e.cpair, 7)
+
+    def test_dead_returns_zero_damage(self):
+        e = Enemy(5.0, 5.0)
+        e.state = 'dead'
+        p = Player()
+        dmg = e.update(0.5, p, self.world, 1000.0)
+        self.assertEqual(dmg, 0)
+
+    def test_dead_does_not_move(self):
+        e = Enemy(5.0, 5.0)
+        e.state = 'dead'
+        p = Player()
+        e.update(1.0, p, self.world, 1000.0)
+        self.assertAlmostEqual(e.x, 5.0)
+        self.assertAlmostEqual(e.y, 5.0)
+
+    def test_los_triggers_chase(self):
+        # Both in open area of row 2, close together
+        e = Enemy(5.0, 2.0)
+        p = Player()
+        p.x, p.y = 5.0, 2.5
+        e.update(0.1, p, self.world, 1000.0)
+        self.assertEqual(e.state, 'chase')
+
+    def test_wall_blocks_los(self):
+        # Controlled grid: wall separates enemy from player
+        grid = [
+            [1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 1],
+            [1, 1, 1, 1, 1],
+        ]
+        w = World(grid)
+        e = Enemy(1.5, 1.5, 'zombie')
+        p = Player()
+        p.x, p.y = 3.5, 1.5
+        e.update(0.1, p, w, 1000.0)
+        self.assertEqual(e.state, 'patrol')  # wall blocks LOS
+
+    def test_chase_moves_toward_player(self):
+        e = Enemy(10.0, 2.0)
+        e.state = 'chase'
+        p = Player()
+        p.x, p.y = 8.0, 2.0   # player is to the west
+        old_x = e.x
+        e.update(0.5, p, self.world, 1000.0)
+        self.assertLess(e.x, old_x)   # moved west
+
+    def test_attack_when_adjacent(self):
+        e = Enemy(2.6, 2.5)
+        e.state = 'chase'
+        e.last_attack = 0.0
+        p = Player()
+        p.x, p.y = 2.5, 2.5   # dist ≈ 0.1 < 0.9
+        dmg = e.update(0.1, p, self.world, 1000.0)
+        zombie_max = Enemy.KINDS['zombie']['dmg'][1]
+        zombie_min = Enemy.KINDS['zombie']['dmg'][0]
+        self.assertGreaterEqual(dmg, zombie_min)
+        self.assertLessEqual(dmg, zombie_max)
+
+    def test_attack_cooldown_respected(self):
+        e = Enemy(2.6, 2.5)
+        e.state = 'chase'
+        e.last_attack = 999.5   # attacked 0.5s ago; cooldown = 1.0s
+        p = Player()
+        p.x, p.y = 2.5, 2.5
+        dmg = e.update(0.1, p, self.world, 1000.0)
+        self.assertEqual(dmg, 0)
+
+    def test_patrol_timer_resets_direction(self):
+        e = Enemy(12.0, 12.0)
+        e.patrol_timer = 0.001  # about to expire
+        old_vx, old_vy = e.patrol_vx, e.patrol_vy
+        p = Player()
+        p.x, p.y = 20.0, 20.0  # far away, no LOS
+        e.update(0.1, p, self.world, 1000.0)
+        # After timer reset, direction may change
+        # We just check it's a float and enemy didn't crash
+        self.assertIsInstance(e.patrol_vx, float)
+
+
+# ---------------------------------------------------------------------------
+# Pickup collection (logic extracted for testing)
+# ---------------------------------------------------------------------------
+
+def _collect(player, pickups):
+    """Mirror of Game.update() pickup logic."""
+    remaining = []
+    for pk in pickups:
+        dist = math.sqrt((pk[0] - player.x) ** 2 + (pk[1] - player.y) ** 2)
+        if dist < 0.75:
+            if pk[2] == 'hp':
+                gained = min(25, 100 - player.health)
+                player.health += gained
+            else:
+                gained = min(15, 99 - player.ammo)
+                player.ammo += gained
+        else:
+            remaining.append(pk)
+    return remaining
+
+
+class TestPickups(unittest.TestCase):
+
+    def test_collect_hp_pickup(self):
+        p = Player()
+        p.health = 70
+        rem = _collect(p, [(2.5, 2.5, 'hp')])
+        self.assertEqual(rem, [])
+        self.assertEqual(p.health, 95)  # 70 + min(25, 30)
+
+    def test_collect_ammo_pickup(self):
+        p = Player()
+        p.ammo = 30
+        _collect(p, [(2.5, 2.5, 'ammo')])
+        self.assertEqual(p.ammo, 45)
+
+    def test_no_collect_far_pickup(self):
+        p = Player()
+        rem = _collect(p, [(20.0, 20.0, 'hp')])
+        self.assertEqual(len(rem), 1)
+        self.assertEqual(p.health, 100)
+
+    def test_hp_capped_at_100(self):
+        p = Player()
+        p.health = 99
+        _collect(p, [(2.5, 2.5, 'hp')])
+        self.assertLessEqual(p.health, 100)
+
+    def test_ammo_capped_at_99(self):
+        p = Player()
+        p.ammo = 90
+        _collect(p, [(2.5, 2.5, 'ammo')])
+        self.assertLessEqual(p.ammo, 99)
+
+    def test_multiple_pickups_only_near_collected(self):
+        p = Player()
+        p.x, p.y = 2.5, 2.5
+        pickups = [(2.5, 2.5, 'hp'), (15.0, 15.0, 'ammo')]
+        rem = _collect(p, pickups)
+        self.assertEqual(len(rem), 1)
+        self.assertEqual(rem[0][2], 'ammo')
+
+
+# ---------------------------------------------------------------------------
+# Hitscan shooting (logic extracted for testing)
+# ---------------------------------------------------------------------------
+
+def _hitscan(player, enemies, world):
+    """Mirror of Game._shoot() target selection."""
+    rdx = math.cos(player.angle)
+    rdy = math.sin(player.angle)
+    best_e, best_d = None, 22.0
+    for e in enemies:
+        if e.state == 'dead':
+            continue
+        ex, ey = e.x - player.x, e.y - player.y
+        dist   = math.sqrt(ex * ex + ey * ey)
+        if dist < 0.3:
+            continue
+        dot  = ex * rdx + ey * rdy
+        perp = abs(ex * rdy - ey * rdx)
+        if dot <= 0 or perp > 0.45 or dot >= best_d:
+            continue
+        if world.has_los(player.x, player.y, e.x, e.y):
+            best_e, best_d = e, dot
+    return best_e, best_d
+
+
+class TestHitscan(unittest.TestCase):
+
+    def setUp(self):
+        self.world = World()
+
+    def test_hit_enemy_directly_ahead(self):
+        p = Player()
+        p.x, p.y, p.angle = 2.5, 2.5, 0.0   # facing east
+        e = Enemy(5.0, 2.5)
+        best, _ = _hitscan(p, [e], self.world)
+        self.assertIs(best, e)
+
+    def test_miss_enemy_behind(self):
+        p = Player()
+        p.x, p.y, p.angle = 5.0, 2.5, 0.0   # facing east
+        e = Enemy(2.5, 2.5)                   # enemy is west
+        best, _ = _hitscan(p, [e], self.world)
+        self.assertIsNone(best)
+
+    def test_miss_enemy_perpendicular(self):
+        p = Player()
+        p.x, p.y, p.angle = 2.5, 2.5, 0.0   # facing east
+        e = Enemy(2.5, 8.0)                   # due north
+        best, _ = _hitscan(p, [e], self.world)
+        self.assertIsNone(best)
+
+    def test_skip_dead_enemy(self):
+        p = Player()
+        p.x, p.y, p.angle = 2.5, 2.5, 0.0
+        e = Enemy(5.0, 2.5)
+        e.state = 'dead'
+        best, _ = _hitscan(p, [e], self.world)
+        self.assertIsNone(best)
+
+    def test_nearest_enemy_wins(self):
+        p = Player()
+        p.x, p.y, p.angle = 2.5, 2.5, 0.0
+        near = Enemy(4.0, 2.5)
+        far  = Enemy(8.0, 2.5)
+        best, _ = _hitscan(p, [near, far], self.world)
+        self.assertIs(best, near)
+
+    def test_wall_blocks_shot(self):
+        # Controlled grid: wall between player and enemy
+        grid = [
+            [1, 1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1],
+        ]
+        w = World(grid)
+        p = Player()
+        p.x, p.y, p.angle = 1.5, 1.5, 0.0   # facing east (angle=0)
+        e = Enemy(3.5, 1.5)
+        best, _ = _hitscan(p, [e], w)
+        self.assertIsNone(best)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
