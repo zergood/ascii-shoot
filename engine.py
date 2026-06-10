@@ -122,6 +122,8 @@ class Renderer:
         self._draw_hud(game, h, w, view_h)
         self._draw_damage_border(game.dmg_flash, view_h, w)
         self._draw_messages(game.messages)
+        if game.paused:
+            self._draw_pause_overlay(view_h, w)
 
     # ---- Sky / floor --------------------------------------------------------
 
@@ -398,25 +400,58 @@ class Renderer:
         bw     = 14
         filled = int(hp_pct * bw)
         bar    = '█' * filled + '░' * (bw - filled)
-        hp_fg  = RED if hp_pct < 0.3 else GREEN
-        sep    = '─' * (w - 1)
+        hp_fg  = (RED    if hp_pct < 0.3 else
+                  ORANGE if hp_pct < 0.6 else GREEN)
 
-        wdef   = WEAPONS[p.weapon]
-        ammo_n = p.ammo.get(wdef['ammo_type'], 0)
-        wname  = f'[{p.weapon+1}]{wdef["name"]}'
-        alive  = sum(1 for e in game.enemies if e.state != 'dead')
+        wdef    = WEAPONS[p.weapon]
+        wname   = f'[{p.weapon+1}]{wdef["name"]}'
+        bullets = p.ammo.get('bullet', 0)
+        shells  = p.ammo.get('shell',  0)
+        alive   = sum(1 for e in game.enemies if e.state != 'dead')
+        sep     = '═' * (w - 1)
+
+        combo_str  = f'  x{p.combo} COMBO!' if p.combo > 1 else ''
+        pause_str  = '  [PAUSED]'           if game.paused  else ''
 
         try:
-            self.con.print(0,  y,     sep[:w-1],            fg=YELLOW)
-            self.con.print(1,  y + 1, f'HP[{bar}]{p.health:3d}', fg=hp_fg)
-            self.con.print(22, y + 1, f'{wname}:{ammo_n:3d}',    fg=YELLOW)
-            self.con.print(38, y + 1, f'SCORE:{p.score}',         fg=GREEN)
-            self.con.print(1,  y + 2, f'ENEMIES:{alive:2d}/{len(game.enemies)}',
+            self.con.print(0,  y,     sep[:w-1],                  fg=YELLOW)
+            self.con.print(1,  y + 1, f'HP[{bar}]{p.health:3d}',  fg=hp_fg)
+            self.con.print(22, y + 1, wname,                       fg=YELLOW)
+            self.con.print(33, y + 1, f'SCORE:{p.score}',          fg=GREEN)
+            if combo_str:
+                self.con.print(52, y + 1, combo_str,               fg=MAGENTA)
+            if pause_str:
+                self.con.print(68, y + 1, pause_str,               fg=CYAN)
+            self.con.print(1,  y + 2,
+                           f'BULLET:{bullets:3d}  SHELL:{shells:2d}',
+                           fg=YELLOW)
+            self.con.print(25, y + 2,
+                           f'ENEMIES:{alive:2d}/{len(game.enemies)}',
                            fg=RED)
-            controls = 'WASD:move  ←→:turn  SPC:fire  1-3:weapon  Q:quit'
-            self.con.print(20, y + 2, controls[:w-21], fg=BLUE)
+            controls = 'WASD:move ←→:turn SPC:fire 1-3:weapon P:pause Q:quit'
+            self.con.print(42, y + 2, controls[:w - 43], fg=BLUE)
         except Exception:
             pass
+
+    # ---- Pause overlay -----------------------------------------------------
+
+    def _draw_pause_overlay(self, view_h: int, w: int) -> None:
+        cx   = w // 2
+        cy   = view_h // 2
+        lines = [
+            '╔════════════════╗',
+            '║    P A U S E D ║',
+            '║  P  to resume  ║',
+            '╚════════════════╝',
+        ]
+        bw = len(lines[0])
+        bx = cx - bw // 2
+        by = cy - len(lines) // 2
+        for i, line in enumerate(lines):
+            try:
+                self.con.print(bx, by + i, line, fg=CYAN, bg=BLACK)
+            except Exception:
+                pass
 
     # ---- Damage border -----------------------------------------------------
 
@@ -493,18 +528,18 @@ class Renderer:
                     return 'quit'
                 if isinstance(event, tcod.event.KeyDown):
                     if event.sym in (tcod.event.KeySym.UP,
-                                     tcod.event.KeySym.w):
+                                     tcod.event.KeySym.W):
                         selected = (selected - 1) % len(options)
                     elif event.sym in (tcod.event.KeySym.DOWN,
-                                       tcod.event.KeySym.s):
+                                       tcod.event.KeySym.S):
                         selected = (selected + 1) % len(options)
                     elif event.sym in (tcod.event.KeySym.RETURN,
                                        tcod.event.KeySym.SPACE,
                                        tcod.event.KeySym.KP_ENTER):
                         return results[selected]
-                    elif event.sym == tcod.event.KeySym.q:
+                    elif event.sym == tcod.event.KeySym.Q:
                         return 'quit'
-                    elif event.sym == tcod.event.KeySym.n:
+                    elif event.sym == tcod.event.KeySym.N:
                         return 'play'
 
     def end_screen(self, game, ctx: tcod.context.Context,
@@ -544,14 +579,18 @@ class InputHandler:
 
     def __init__(self) -> None:
         self._held: set[tcod.event.KeySym] = set()
+        self._just: set[tcod.event.KeySym] = set()
 
     def process_events(self) -> tuple[set, bool]:
         """Poll events; return (held_keys, quit_requested)."""
+        self._just.clear()
         quit_req = False
         for event in tcod.event.get():
             if isinstance(event, tcod.event.Quit):
                 quit_req = True
             elif isinstance(event, tcod.event.KeyDown):
+                if not event.repeat:
+                    self._just.add(event.sym)
                 self._held.add(event.sym)
                 if event.sym in QUIT:
                     quit_req = True
@@ -559,8 +598,12 @@ class InputHandler:
                 self._held.discard(event.sym)
         return frozenset(self._held), quit_req
 
+    def just_pressed(self, key: tcod.event.KeySym) -> bool:
+        return key in self._just
+
     def clear(self) -> None:
         self._held.clear()
+        self._just.clear()
 
 
 # ── Context factory ─────────────────────────────────────────────────────────

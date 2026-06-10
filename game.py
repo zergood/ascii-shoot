@@ -253,6 +253,7 @@ class Game:
         self.hit_shake   = 0.0
         self._is_moving  = False
         self._walk_timer = 0.0
+        self.paused      = False
 
         self.renderer      = renderer
         self._input_handler = input_handler
@@ -269,6 +270,12 @@ class Game:
 
         if quit_req:
             self.running = False
+            return
+
+        if self._input_handler.just_pressed(_eng.PAUSE):
+            self.paused = not self.paused
+
+        if self.paused:
             return
 
         p   = self.player
@@ -360,9 +367,15 @@ class Game:
 
             if best_e.health <= 0:
                 best_e.state = 'dead'
-                p.score     += 150
+                p.combo     += 1
+                p.combo_t    = time.time() + 3.0
+                bonus        = 150 * max(1, p.combo)
+                p.score     += bonus
                 self.corpses.append((best_e.x, best_e.y))
-                self._msg(f"KILL! +150pts  [{best_d:.1f}m]")
+                if p.combo > 1:
+                    self._msg(f"x{p.combo} COMBO! +{bonus}pts [{best_d:.1f}m]")
+                else:
+                    self._msg(f"KILL! +{bonus}pts  [{best_d:.1f}m]")
             else:
                 self._msg(f"HIT {best_e.char}  -{dmg}hp  [{best_d:.1f}m]")
 
@@ -382,6 +395,9 @@ class Game:
         if self._is_moving:
             self._walk_timer += dt
         self.messages = [(m, t) for m, t in self.messages if t > now]
+        p = self.player
+        if p.combo > 0 and p.combo_t > 0 and now > p.combo_t:
+            p.combo = 0
 
         alive = [e for e in self.enemies if e.state != 'dead']
         if not alive:
@@ -419,14 +435,14 @@ class Game:
 
     def run(self, ctx):
         """Run the game loop. *ctx* is the tcod Context for presenting frames."""
-        import engine as _eng
         target = 1.0 / 35.0
         while self.running:
             now = time.time()
             dt  = min(now - self.last_t, 0.05)
             self.last_t = now
             self._input(dt)
-            self.update(dt, now)
+            if not self.paused:
+                self.update(dt, now)
             self.renderer.render(self, now)
             ctx.present(self.renderer.con)
             wait = target - (time.time() - now)
