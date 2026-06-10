@@ -7,7 +7,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from game import World, Player, Enemy, WORLD_MAP, MAP_W, MAP_H
+from game import World, Player, Enemy, WEAPONS, WORLD_MAP, MAP_W, MAP_H
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +153,32 @@ class TestPlayer(unittest.TestCase):
         self.assertAlmostEqual(p.y, 2.5)
         self.assertAlmostEqual(p.angle, 0.0)
         self.assertEqual(p.health, 100)
-        self.assertEqual(p.ammo, 50)
+        self.assertIsInstance(p.ammo, dict)
+        self.assertIn('bullet', p.ammo)
+        self.assertIn('shell', p.ammo)
+        self.assertEqual(p.ammo['bullet'], 50)
+        self.assertEqual(p.ammo['shell'], 15)
+        self.assertEqual(p.weapon, 0)
         self.assertEqual(p.score, 0)
+
+    def test_current_ammo_pistol(self):
+        p = Player()
+        p.weapon = 0   # pistol uses bullet
+        self.assertEqual(p.current_ammo, p.ammo['bullet'])
+
+    def test_current_ammo_shotgun(self):
+        p = Player()
+        p.weapon = 1   # shotgun uses shell
+        self.assertEqual(p.current_ammo, p.ammo['shell'])
+
+    def test_weapons_list_structure(self):
+        for w in WEAPONS:
+            self.assertIn('name',      w)
+            self.assertIn('cd',        w)
+            self.assertIn('dmg',       w)
+            self.assertIn('ammo_type', w)
+            self.assertIn('pellets',   w)
+            self.assertGreater(w['pellets'], 0)
 
     def test_two_players_independent(self):
         p1, p2 = Player(), Player()
@@ -277,8 +301,8 @@ def _collect(player, pickups):
                 gained = min(25, 100 - player.health)
                 player.health += gained
             else:
-                gained = min(15, 99 - player.ammo)
-                player.ammo += gained
+                gained = min(15, 99 - player.ammo['bullet'])
+                player.ammo['bullet'] += gained
         else:
             remaining.append(pk)
     return remaining
@@ -295,9 +319,9 @@ class TestPickups(unittest.TestCase):
 
     def test_collect_ammo_pickup(self):
         p = Player()
-        p.ammo = 30
+        p.ammo['bullet'] = 30
         _collect(p, [(2.5, 2.5, 'ammo')])
-        self.assertEqual(p.ammo, 45)
+        self.assertEqual(p.ammo['bullet'], 45)
 
     def test_no_collect_far_pickup(self):
         p = Player()
@@ -313,9 +337,9 @@ class TestPickups(unittest.TestCase):
 
     def test_ammo_capped_at_99(self):
         p = Player()
-        p.ammo = 90
+        p.ammo['bullet'] = 90
         _collect(p, [(2.5, 2.5, 'ammo')])
-        self.assertLessEqual(p.ammo, 99)
+        self.assertLessEqual(p.ammo['bullet'], 99)
 
     def test_multiple_pickups_only_near_collected(self):
         p = Player()

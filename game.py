@@ -59,6 +59,18 @@ SHADE_UNI   = ['█', '▓', '▒', '░', '·']
 SHADE_ASCII = ['#', '@', '+', ':', '.']
 WALL_COLOR  = {1: 3, 2: 4, 3: 3, 4: 1}
 
+WEAPONS = [
+    # idx 0 — Pistol
+    {'name': 'Pistol',  'cd': 0.25, 'dmg': (12, 28), 'spread': 0.45,
+     'ammo_type': 'bullet', 'cost': 1, 'pellets': 1},
+    # idx 1 — Shotgun
+    {'name': 'Shotgun', 'cd': 0.70, 'dmg': (6,  14), 'spread': 0.85,
+     'ammo_type': 'shell',  'cost': 1, 'pellets': 5},
+    # idx 2 — Rifle
+    {'name': 'Rifle',   'cd': 0.12, 'dmg': (25, 40), 'spread': 0.22,
+     'ammo_type': 'bullet', 'cost': 1, 'pellets': 1},
+]
+
 
 # ---------------------------------------------------------------------------
 # World  — map data + spatial queries, no curses
@@ -142,12 +154,19 @@ class World:
 
 class Player:
     def __init__(self):
-        self.x      = 2.5
-        self.y      = 2.5
-        self.angle  = 0.0
-        self.health = 100
-        self.ammo   = 50
-        self.score  = 0
+        self.x       = 2.5
+        self.y       = 2.5
+        self.angle   = 0.0
+        self.health  = 100
+        self.ammo    = {'bullet': 50, 'shell': 15}
+        self.weapon  = 0   # index into WEAPONS
+        self.score   = 0
+        self.combo   = 0
+        self.combo_t = 0.0
+
+    @property
+    def current_ammo(self) -> int:
+        return self.ammo.get(WEAPONS[self.weapon]['ammo_type'], 0)
 
 
 class Enemy:
@@ -511,6 +530,13 @@ class Renderer:
 
     # ---- Gun sprite --------------------------------------------------------
 
+    # weapon sprites: each row is 9 chars, centred with offset -4
+    _GUN_SPRITES = [
+        ['   ___   ', '  /---\\  ', '   |_|   '],   # Pistol
+        [' ======= ', '/=======\\', '|=======|'],   # Shotgun
+        ['  _____  ', ' /-----\\=', ' \\_____/ '],   # Rifle
+    ]
+
     def _draw_gun(self, scr, game, view_h, w):
         if self._low:
             return
@@ -522,11 +548,11 @@ class Renderer:
         if game._is_moving and not firing:
             bob = round(math.sin(game._walk_timer * 8.0) * 1.3)
 
-        gun_lines = ['  ___  ', ' /===\\ ', '[=====]']
+        gun_lines = self._GUN_SPRITES[game.player.weapon]
         if firing:
-            flashes  = [' *!*!* ', '  *!*  ', '   !   ']
+            flashes = ['  *!*!*  ', '   *!*   ', '    !    ']
             fi = int((0.12 - game.flash) / 0.04) % len(flashes)
-            try: scr.addstr(view_h - 5, cx - 3,
+            try: scr.addstr(view_h - 5, cx - 4,
                             flashes[fi], curses.color_pair(7) | curses.A_BOLD)
             except curses.error: pass
             base_row = view_h - 4
@@ -535,7 +561,7 @@ class Renderer:
 
         base_row += bob
         for i, line in enumerate(gun_lines):
-            try: scr.addstr(base_row + i, cx - 3, line, col)
+            try: scr.addstr(base_row + i, cx - 4, line, col)
             except curses.error: pass
 
     # ---- Minimap -----------------------------------------------------------
@@ -619,18 +645,21 @@ class Renderer:
         hp_col = curses.color_pair(1) if hp_pct < 0.3 else curses.color_pair(4)
         sep    = '─' * (w - 1) if self._unicode else '-' * (w - 1)
         alive  = sum(1 for e in game.enemies if e.state != 'dead')
+        wdef   = WEAPONS[p.weapon]
+        ammo_n = p.ammo.get(wdef['ammo_type'], 0)
+        wname  = f'[{p.weapon+1}]{wdef["name"]}'
         try:
-            scr.addstr(y,     0,  sep, curses.color_pair(3))
+            scr.addstr(y,     0,  sep[:w-1], curses.color_pair(3))
             scr.addstr(y + 1, 1,  f'HP[{bar}]{p.health:3d}',
                        hp_col | curses.A_BOLD)
-            scr.addstr(y + 1, 22, f'AMMO:{p.ammo:3d}',
+            scr.addstr(y + 1, 22, f'{wname}:{ammo_n:3d}',
                        curses.color_pair(3) | curses.A_BOLD)
-            scr.addstr(y + 1, 32, f'SCORE:{p.score}',
+            scr.addstr(y + 1, 38, f'SCORE:{p.score}',
                        curses.color_pair(4) | curses.A_BOLD)
             scr.addstr(y + 2, 1,  f'ENEMIES:{alive:2d}/{len(game.enemies)}',
                        curses.color_pair(1))
             scr.addstr(y + 2, 18,
-                       'W/S:fwd/back  A/D:strafe  ←→:turn  SPC:fire  Q:quit',
+                       'WASD:move ←→:turn SPC:fire 1-3:weapon Q:quit',
                        curses.color_pair(6))
         except curses.error:
             pass
@@ -779,53 +808,68 @@ class Game:
         if ord(' ') in keys or ord('f') in keys:
             self._shoot()
 
+        for idx, k in enumerate((ord('1'), ord('2'), ord('3'))):
+            if k in keys:
+                p.weapon = idx
+
     # ---- Shooting ----------------------------------------------------------
 
     def _shoot(self):
         if self.shoot_cd > 0:
             return
-        p = self.player
-        if p.ammo <= 0:
-            self._msg("-- NO AMMO --")
+        p    = self.player
+        wdef = WEAPONS[p.weapon]
+        atype = wdef['ammo_type']
+
+        if p.ammo.get(atype, 0) <= 0:
+            self._msg(f"-- NO {wdef['name'].upper()} AMMO --")
             return
 
-        p.ammo       -= 1
-        self.shoot_cd = 0.25
-        self.flash    = 0.12
-        self.recoil   = 0.05
+        p.ammo[atype] -= wdef['cost']
+        self.shoot_cd  = wdef['cd']
+        self.flash     = 0.12
+        self.recoil    = 0.05
 
-        rdx = math.cos(p.angle)
-        rdy = math.sin(p.angle)
-        best_e, best_d = None, 22.0
+        hit_any = False
+        for _ in range(wdef['pellets']):
+            off = random.uniform(-wdef['spread'] * 0.10,
+                                  wdef['spread'] * 0.10)
+            rdx = math.cos(p.angle + off)
+            rdy = math.sin(p.angle + off)
+            best_e, best_d = None, 22.0
 
-        for e in self.enemies:
-            if e.state == 'dead':
-                continue
-            ex, ey = e.x - p.x, e.y - p.y
-            dist   = math.sqrt(ex * ex + ey * ey)
-            if dist < 0.3:
-                continue
-            dot  = ex * rdx + ey * rdy
-            perp = abs(ex * rdy - ey * rdx)
-            if dot <= 0 or perp > 0.45 or dot >= best_d:
-                continue
-            if self.world.has_los(p.x, p.y, e.x, e.y):
-                best_e, best_d = e, dot
+            for e in self.enemies:
+                if e.state == 'dead':
+                    continue
+                ex, ey = e.x - p.x, e.y - p.y
+                dist   = math.sqrt(ex * ex + ey * ey)
+                if dist < 0.3:
+                    continue
+                dot  = ex * rdx + ey * rdy
+                perp = abs(ex * rdy - ey * rdx)
+                if dot <= 0 or perp > wdef['spread'] or dot >= best_d:
+                    continue
+                if self.world.has_los(p.x, p.y, e.x, e.y):
+                    best_e, best_d = e, dot
 
-        if best_e is None:
+            if best_e is None or best_e.state == 'dead':
+                continue
+
+            dmg = random.randint(*wdef['dmg'])
+            best_e.health -= dmg
+            best_e.state   = 'chase'
+            hit_any = True
+
+            if best_e.health <= 0:
+                best_e.state = 'dead'
+                p.score     += 150
+                self.corpses.append((best_e.x, best_e.y))
+                self._msg(f"KILL! +150pts  [{best_d:.1f}m]")
+            else:
+                self._msg(f"HIT {best_e.char}  -{dmg}hp  [{best_d:.1f}m]")
+
+        if not hit_any:
             self._msg("MISSED!")
-            return
-
-        dmg = random.randint(12, 28)
-        best_e.health -= dmg
-        best_e.state   = 'chase'
-        if best_e.health <= 0:
-            best_e.state = 'dead'
-            p.score     += 150
-            self.corpses.append((best_e.x, best_e.y))
-            self._msg(f"KILL! +150pts  [{best_d:.1f}m]")
-        else:
-            self._msg(f"HIT {best_e.char}  -{dmg}hp  [{best_d:.1f}m]")
 
     # ---- Update ------------------------------------------------------------
 
@@ -866,8 +910,8 @@ class Game:
                     self.player.health += gained
                     self._msg(f"+{gained} HEALTH")
                 else:
-                    gained = min(15, 99 - self.player.ammo)
-                    self.player.ammo += gained
+                    gained = min(15, 99 - self.player.ammo['bullet'])
+                    self.player.ammo['bullet'] += gained
                     self._msg(f"+{gained} AMMO")
             else:
                 remaining.append(pk)
