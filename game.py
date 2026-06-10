@@ -120,6 +120,8 @@ class Game:
         self._view_angle = 0.0  # render angle (player.angle + recoil + shake)
         self.corpses    = []    # (x, y) of killed enemies
         self.pickups    = list(PICKUP_SPAWNS)
+        self._is_moving  = False
+        self._walk_timer = 0.0
         self.running  = True
         self.won      = False
         self._unicode = True
@@ -223,6 +225,11 @@ class Game:
         if curses.KEY_LEFT  in keys: p.angle += rot
         if curses.KEY_RIGHT in keys: p.angle -= rot
 
+        self._is_moving = any(k in keys for k in (
+            ord('w'), ord('s'), ord('a'), ord('d'),
+            curses.KEY_UP, curses.KEY_DOWN,
+        ))
+
         if ord(' ') in keys or ord('f') in keys:
             self._shoot()
 
@@ -297,6 +304,8 @@ class Game:
         self.recoil   *= max(0.0, 1.0 - 14.0 * dt)   # spring back
         if self.recoil < 0.001:
             self.recoil = 0.0
+        if self._is_moving:
+            self._walk_timer += dt
         self.messages  = [(m, t) for m, t in self.messages if t > now]
 
         alive = [e for e in self.enemies if e.state != 'dead']
@@ -370,7 +379,7 @@ class Game:
     # -----------------------------------------------------------------------
 
     def _cast(self, col: int, w: int):
-        """Return (perp_dist, wall_type, side) for screen column `col`."""
+        """Return (perp_dist, wall_type, side, wall_x) for screen column `col`."""
         p   = self.player
         dx  = math.cos(self._view_angle)
         dy  = math.sin(self._view_angle)
@@ -399,10 +408,13 @@ class Game:
                 sdy += ddy; my += sy; side = 1
             if 0 <= mx < MAP_W and 0 <= my < MAP_H and WORLD_MAP[my][mx]:
                 wt = WORLD_MAP[my][mx]
-                d  = (sdx - ddx) if side == 0 else (sdy - ddy)
-                return max(0.05, d), wt, side
+                d  = max(0.05, (sdx - ddx) if side == 0 else (sdy - ddy))
+                # Exact hit X along wall face [0, 1)
+                wx = (p.y + d * rdy) if side == 0 else (p.x + d * rdx)
+                wx -= math.floor(wx)
+                return d, wt, side, wx
 
-        return 64.0, 1, 0
+        return 64.0, 1, 0, 0.5
 
     # -----------------------------------------------------------------------
     # Rendering
@@ -446,15 +458,45 @@ class Game:
                 try: scr.addstr(row, 0, floor_g[idx] * (w - 1), curses.color_pair(6))
                 except curses.error: pass
         else:
-            sky_ch = '·' if self._unicode and self.quality != 'low' else ' '
+            ceil_ch  = '·' if self._unicode and self.quality != 'low' else ' '
+            floor_ch = ' '   # blank floor — grid overlay adds the detail
             for row in range(half_h):
-                try: scr.addstr(row, 0, sky_ch * (w - 1), curses.color_pair(5))
+                try: scr.addstr(row, 0, ceil_ch  * (w - 1), curses.color_pair(5))
                 except curses.error: pass
             for row in range(half_h, view_h):
-                try: scr.addstr(row, 0, sky_ch * (w - 1), curses.color_pair(6))
+                try: scr.addstr(row, 0, floor_ch * (w - 1), curses.color_pair(6))
                 except curses.error: pass
 
         z_buf = [999.0] * w
+
+        # ---- Floor casting (perspective grid) --------------------------------
+        if self.quality != 'low' and self._unicode:
+            _pdx = math.cos(self._view_angle)
+            _pdy = math.sin(self._view_angle)
+            _plx =  0.66 * _pdy;  _ply = -0.66 * _pdx
+            _rl_x = _pdx - _plx;  _rl_y = _pdy - _ply
+            _rr_x = _pdx + _plx;  _rr_y = _pdy + _ply
+            _inv_w = 1.0 / max(w - 2, 1)
+            _fstride = 1 if hires else 2
+            _ppx, _ppy = self.player.x, self.player.y
+            _fattr = curses.color_pair(6) | curses.A_BOLD
+            for _row in range(half_h + 1, view_h):
+                _rd  = (view_h * 0.5) / (_row - half_h)
+                _fx  = _ppx + _rd * _rl_x
+                _fy  = _ppy + _rd * _rl_y
+                _fsx = _rd * (_rr_x - _rl_x) * _inv_w
+                _fsy = _rd * (_rr_y - _rl_y) * _inv_w
+                _thr = max(0.05, 0.14 - _rd * 0.01)
+                _cx  = _fx;  _cy = _fy
+                for _col in range(0, w - 1, _fstride):
+                    _frx = _cx - math.floor(_cx)
+                    _fry = _cy - math.floor(_cy)
+                    if (_frx < _thr or _frx > 1.0 - _thr or
+                            _fry < _thr or _fry > 1.0 - _thr):
+                        try: scr.addstr(_row, _col, '·', _fattr)
+                        except curses.error: pass
+                    _cx += _fsx * _fstride
+                    _cy += _fsy * _fstride
 
         # ---- Walls ----------------------------------------------------------
         # Map color pair index back to curses color constant (for half-blocks)
@@ -462,7 +504,7 @@ class Game:
                       3: curses.COLOR_YELLOW,  4: curses.COLOR_GREEN}
 
         for col in range(0, w - 1, ray_step):
-            dist, wtype, side = self._cast(col, w)
+            dist, wtype, side, wall_x = self._cast(col, w)
 
             wh  = min(int(view_h / dist), view_h)
             top = max(0,      half_h - wh // 2)
@@ -473,12 +515,30 @@ class Game:
             cp  = WALL_COLOR.get(wtype, 3)
             if side == 1:
                 cp = max(1, cp - 1)     # darker N/S faces
-            attr = curses.color_pair(cp) | (curses.A_BOLD if dist < 2.5 else 0)
 
+            # Distance fog: dim far walls instead of changing hue
+            fog = (self.quality != 'low' and dist > 7.0)
+            attr = (curses.color_pair(cp)
+                    | (curses.A_BOLD if dist < 2.5 else
+                       curses.A_DIM  if fog else 0))
+
+            wall_h = max(1, bot - top)
             for c in range(col, min(col + ray_step, w - 1)):
                 z_buf[c] = dist
                 for row in range(top, bot):
-                    try: scr.addstr(row, c, ch, attr)
+                    # Brick texture: vertical seams + horizontal mortar bands
+                    if self.quality != 'low' and self._unicode:
+                        row_f    = (row - top) / wall_h
+                        brick_r  = int(row_f * 3)
+                        offset   = 0.5 if brick_r % 2 else 0.0
+                        mortar_x = ((wall_x + offset) * 2) % 1.0
+                        mortar_y = (row_f * 3) % 1.0
+                        is_mortar = (mortar_y < 0.10 or
+                                     mortar_x < 0.07 or mortar_x > 0.93)
+                        tex = shade[min(len(shade) - 1, si + 1)] if is_mortar else ch
+                    else:
+                        tex = ch
+                    try: scr.addstr(row, c, tex, attr)
                     except curses.error: pass
 
             # Smooth half-block edges at wall top & bottom (high quality only)
@@ -532,7 +592,8 @@ class Game:
         scr.refresh()
 
     def _draw_enemies(self, z_buf, w, view_h, half_h):
-        p   = self.player
+        p     = self.player
+        frame = int(time.time() * 5) % 2   # 2-frame walk cycle at 5 Hz
         dx  = math.cos(self._view_angle);  dy = math.sin(self._view_angle)
         px  =  0.66 * dy;                  py = -0.66 * dx
         inv = 1.0 / (px * dy - dx * py)
@@ -573,7 +634,12 @@ class Game:
                     if   ry < 0.18: ch = 'O'
                     elif ry < 0.22: ch = '-'
                     elif ry < 0.65: ch = e.char
-                    elif ry < 0.80: ch = '|'
+                    elif ry < 0.80:
+                        # Walking leg animation for chasing enemies
+                        if e.state == 'chase':
+                            ch = '\\' if frame else '/'
+                        else:
+                            ch = '|'
                     else:           continue
                     try:
                         self.scr.addstr(row, col, ch, attr)
@@ -681,6 +747,11 @@ class Game:
         firing = self.flash > 0
         col = curses.color_pair(3) | curses.A_BOLD
 
+        # Walking bob: sine wave offset while moving, freeze while firing
+        bob = 0
+        if self._is_moving and not firing:
+            bob = round(math.sin(self._walk_timer * 8.0) * 1.3)
+
         if firing:
             # Muzzle flash above barrel
             flashes = [' *!*!* ', '  *!*  ', '   !   ']
@@ -695,6 +766,8 @@ class Game:
         else:
             gun_lines = ['  ___  ', ' /===\\ ', '[=====]']
             base_row  = view_h - 3
+
+        base_row += bob
 
         for i, line in enumerate(gun_lines):
             try:
