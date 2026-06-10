@@ -498,32 +498,51 @@ class Renderer:
             r" / _ \\__ \ (__ | | | |  \__ \ __ |   /| (_) || |  ",
             r"/_/ \_\___/\___|___|___| |___/_||_|_|_\ \___/ |_|  ",
         ]
+        tagline = 'A  D O O M - S T Y L E  A S C I I  S H O O T E R'
+        blink   = True
+        blink_t = time.time()
+
         while True:
+            now = time.time()
+            if now - blink_t >= 0.5:
+                blink   = not blink
+                blink_t = now
+
             self.con.clear()
             cw = COLS // 2
+
             for i, line in enumerate(title):
                 try:
                     self.con.print(max(0, cw - len(line) // 2),
-                                   ROWS // 2 - 8 + i, line, fg=YELLOW)
-                except Exception:
-                    pass
-            for i, opt in enumerate(options):
-                fg     = MAGENTA if i == selected else WHITE
-                marker = '> ' if i == selected else '  '
-                try:
-                    self.con.print(cw - 10, ROWS // 2 - 2 + i * 2,
-                                   f'{marker}{opt}', fg=fg)
+                                   ROWS // 2 - 10 + i, line, fg=YELLOW)
                 except Exception:
                     pass
             try:
+                self.con.print(cw - len(tagline) // 2,
+                               ROWS // 2 - 5, tagline, fg=ORANGE)
+            except Exception:
+                pass
+
+            for i, opt in enumerate(options):
+                is_sel = (i == selected)
+                fg     = MAGENTA if is_sel else WHITE
+                marker = ('▶ ' if blink else '  ') if is_sel else '  '
+                try:
+                    self.con.print(cw - 10, ROWS // 2 - 1 + i * 2,
+                                   f'{marker}{opt}', fg=fg)
+                except Exception:
+                    pass
+
+            try:
                 self.con.print(1, ROWS - 2,
-                               '↑↓ / W S : navigate    ENTER / SPACE : select',
+                               '↑↓ W S : navigate    ENTER SPACE : select',
                                fg=GREY)
             except Exception:
                 pass
+
             ctx.present(self.con)
 
-            for event in tcod.event.wait():
+            for event in tcod.event.wait(timeout=0.5):
                 if isinstance(event, tcod.event.Quit):
                     return 'quit'
                 if isinstance(event, tcod.event.KeyDown):
@@ -542,30 +561,167 @@ class Renderer:
                     elif event.sym == tcod.event.KeySym.N:
                         return 'play'
 
-    def end_screen(self, game, ctx: tcod.context.Context,
-                   scores: list[int]) -> None:
-        """Show game-over / win screen with highscores."""
+    def scores_screen(self, ctx: tcod.context.Context,
+                      scores: list[int]) -> None:
+        """Dedicated highscore table. Any key returns to menu."""
+        medals = ['★', '☆', '○', '·', '·', '·', '·', '·', '·', '·']
         self.con.clear()
-        title = 'YOU WIN!' if game.won else 'GAME OVER'
-        fg    = GREEN if game.won else RED
-        kills = sum(1 for e in game.enemies if e.state == 'dead')
-        lines = [
-            title,
-            f'Final score:  {game.player.score}',
-            f'Kills: {kills}/{len(game.enemies)}',
-            '',
-            'TOP SCORES:',
-        ] + [f'  {i+1}. {s}' for i, s in enumerate(scores[:5])] + [
-            '',
-            'Press any key…',
-        ]
-        cy = ROWS // 2 - len(lines) // 2
-        for i, line in enumerate(lines):
+        cw = COLS // 2
+
+        header = '╔══════════════════════╗'
+        footer = '╚══════════════════════╝'
+        try:
+            self.con.print(cw - len(header) // 2,
+                           ROWS // 2 - 8, header, fg=YELLOW)
+            self.con.print(cw - 9, ROWS // 2 - 7,
+                           '║    HALL  OF  FAME    ║', fg=YELLOW)
+            self.con.print(cw - len(header) // 2,
+                           ROWS // 2 - 6, '╠══════════════════════╣', fg=YELLOW)
+        except Exception:
+            pass
+
+        if scores:
+            for i, s in enumerate(scores[:10]):
+                medal = medals[i]
+                line  = f'║  {medal} {i+1:2d}.  {s:>8d}       ║'
+                fg    = (YELLOW  if i == 0 else
+                         GREY    if i == 1 else
+                         ORANGE  if i == 2 else WHITE)
+                try:
+                    self.con.print(cw - len(header) // 2,
+                                   ROWS // 2 - 5 + i, line, fg=fg)
+                except Exception:
+                    pass
+            row_after = ROWS // 2 - 5 + len(scores[:10])
+        else:
             try:
-                self.con.print(COLS // 2 - len(line) // 2,
-                               cy + i, line, fg=fg)
+                self.con.print(cw - 8, ROWS // 2 - 4,
+                               '║    No scores yet.    ║', fg=GREY)
             except Exception:
                 pass
+            row_after = ROWS // 2 - 3
+
+        try:
+            self.con.print(cw - len(footer) // 2,
+                           row_after, footer, fg=YELLOW)
+            self.con.print(cw - 11, row_after + 2,
+                           'Press any key to return…', fg=GREY)
+        except Exception:
+            pass
+
+        ctx.present(self.con)
+        for event in tcod.event.wait():
+            if isinstance(event, (tcod.event.KeyDown, tcod.event.Quit)):
+                return
+
+    def wave_clear_screen(self, ctx: tcod.context.Context) -> None:
+        """Brief victory flash before the end screen. Auto-advances after 2 s."""
+        lines = [
+            '╔══════════════════════════╗',
+            '║                          ║',
+            '║   ★  L E V E L  C L E A R  ★   ║',
+            '║                          ║',
+            '║   All enemies defeated!  ║',
+            '║                          ║',
+            '╚══════════════════════════╝',
+        ]
+        cw   = COLS // 2
+        cy   = ROWS // 2 - len(lines) // 2
+        bw   = max(len(l) for l in lines)
+        bx   = cw - bw // 2
+        deadline = time.time() + 2.0
+
+        while time.time() < deadline:
+            self.con.clear()
+            for i, line in enumerate(lines):
+                try:
+                    self.con.print(bx, cy + i, line, fg=GREEN)
+                except Exception:
+                    pass
+            try:
+                self.con.print(cw - 12, cy + len(lines) + 1,
+                               'Press any key to continue…', fg=GREY)
+            except Exception:
+                pass
+            ctx.present(self.con)
+            for event in tcod.event.wait(timeout=0.1):
+                if isinstance(event, (tcod.event.KeyDown, tcod.event.Quit)):
+                    return
+
+    def end_screen(self, game, ctx: tcod.context.Context,
+                   scores: list[int]) -> None:
+        """Show game-over / win screen with stats and highscores."""
+        self.con.clear()
+        is_win    = game.won
+        title     = '  YOU  WIN!  ' if is_win else '  GAME  OVER  '
+        title_fg  = GREEN if is_win else RED
+        kills     = sum(1 for e in game.enemies if e.state == 'dead')
+        total     = len(game.enemies)
+        elapsed   = int(time.time() - getattr(game, 'start_t', time.time()))
+        mins, sec = divmod(elapsed, 60)
+        is_new    = bool(scores and game.player.score == scores[0]
+                        and game.player.score > 0)
+
+        stats = [
+            f'  Score   : {game.player.score}',
+            f'  Kills   : {kills} / {total}',
+            f'  Time    : {mins:02d}:{sec:02d}',
+        ]
+        top   = ['', '  TOP SCORES:', '  ─────────────'] + [
+            f'  {i+1:2d}.  {s}' for i, s in enumerate(scores[:5])
+        ] + ['', '  Press any key…']
+
+        box_w    = 34
+        cw       = COLS // 2
+        bx       = cw - box_w // 2
+        by       = ROWS // 2 - 9
+        top_line = '╔' + '═' * (box_w - 2) + '╗'
+        bot_line = '╚' + '═' * (box_w - 2) + '╝'
+        mid_sep  = '╠' + '═' * (box_w - 2) + '╣'
+
+        def _row(text: str, fg=WHITE) -> None:
+            nonlocal by
+            inner = text[:box_w - 4].ljust(box_w - 4)
+            try:
+                self.con.print(bx, by, f'║ {inner} ║', fg=fg)
+            except Exception:
+                pass
+            by += 1
+
+        def _line(ch: str, fg=YELLOW) -> None:
+            nonlocal by
+            try:
+                self.con.print(bx, by, ch, fg=fg)
+            except Exception:
+                pass
+            by += 1
+
+        by_start = by
+        try:
+            self.con.print(bx, by, top_line, fg=YELLOW)
+        except Exception:
+            pass
+        by += 1
+
+        _row(title.center(box_w - 4), fg=title_fg)
+        if is_new:
+            _row('★  NEW  HIGH  SCORE  ★'.center(box_w - 4), fg=YELLOW)
+
+        _line(mid_sep)
+
+        for s in stats:
+            _row(s, fg=WHITE)
+
+        _line(mid_sep)
+
+        for s in top:
+            _row(s, fg=CYAN if s.strip().startswith(('1.', '1 ')) else WHITE)
+
+        try:
+            self.con.print(bx, by, bot_line, fg=YELLOW)
+        except Exception:
+            pass
+
         ctx.present(self.con)
         for event in tcod.event.wait():
             if isinstance(event, (tcod.event.KeyDown, tcod.event.Quit)):

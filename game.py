@@ -258,6 +258,7 @@ class Game:
         self.renderer      = renderer
         self._input_handler = input_handler
         self.last_t        = time.time()
+        self.start_t       = time.time()
 
     def _msg(self, text: str):
         self.messages.append((text, time.time() + 2.5))
@@ -492,21 +493,15 @@ def main():
             if action == 'quit':
                 break
             if action == 'scores':
-                scores = load_scores()
-                # reuse end_screen with a dummy won=True game for display
-                # (simplest approach — just show scores via end_screen)
-                class _Stub:
-                    won = True
-                    player = type('P', (), {'score': 0})()
-                    enemies = []
-                _stub = _Stub()
-                renderer.end_screen(_stub, ctx, scores)
+                renderer.scores_screen(ctx, load_scores())
                 continue
 
             # --- Play ---
             game = Game(renderer, inp)
             game.run(ctx)
             save_score(game.player.score)
+            if game.won:
+                renderer.wave_clear_screen(ctx)
             renderer.end_screen(game, ctx, load_scores())
             inp.clear()
 
