@@ -40,37 +40,50 @@ GUN_FLASH = [
 ]
 
 # ---------------------------------------------------------------------------
-# Enemy sprite builder
+# Enemy sprites — static band tables
 # ---------------------------------------------------------------------------
+# Each entry is (ry_max, char).
+# ry_max: the band covers [previous ry_max, ry_max).
+# char:   str for a fixed character, tuple (patrol_ch, chase_frame0, chase_frame1)
+#         for the animated legs row.
+# Rows after the last band are transparent (None).
+
+_LEGS = ('|', '/', '\\')   # (patrol, chase_frame0, chase_frame1)
+
+ENEMY_SPRITES: dict[str, list[tuple]] = {
+    'zombie': [
+        (0.18, 'O'),   # head
+        (0.22, '-'),   # neck
+        (0.65, 'Z'),   # body
+        (0.80, _LEGS), # legs
+    ],
+    'demon': [
+        (0.10, 'W'),   # horns
+        (0.22, 'O'),   # head
+        (0.27, '}'),   # chest
+        (0.65, 'D'),   # body
+        (0.80, _LEGS), # legs
+    ],
+    'imp': [
+        (0.08, '^'),   # spike
+        (0.20, 'O'),   # head
+        (0.25, '~'),   # neck
+        (0.65, 'I'),   # body
+        (0.80, _LEGS), # legs
+    ],
+}
+
 
 def enemy_char(kind: str, ry: float, frame: int, state: str) -> str | None:
-    """Return the ASCII character at relative height *ry* (0=top, 1=bottom).
+    """Look up the sprite character for *kind* at vertical fraction *ry*.
 
-    Returns None for transparent rows (below the sprite).
-    *frame* is 0 or 1 for the walk animation tick.
-    *state* is the enemy state string ('patrol', 'chase', 'dead').
+    *frame* (0 or 1) and *state* only affect the animated legs band.
+    Returns None for transparent (below-sprite) rows.
     """
-    legs = ('\\' if frame else '/') if state == 'chase' else '|'
-
-    if kind == 'demon':
-        if   ry < 0.10: return 'W'   # wide horns
-        elif ry < 0.22: return 'O'
-        elif ry < 0.27: return '}'
-        elif ry < 0.65: return 'D'
-        elif ry < 0.80: return legs
-        else:           return None
-
-    elif kind == 'imp':
-        if   ry < 0.08: return '^'   # pointy head
-        elif ry < 0.20: return 'O'
-        elif ry < 0.25: return '~'
-        elif ry < 0.65: return 'I'
-        elif ry < 0.80: return legs
-        else:           return None
-
-    else:  # zombie (default)
-        if   ry < 0.18: return 'O'
-        elif ry < 0.22: return '-'
-        elif ry < 0.65: return 'Z'
-        elif ry < 0.80: return legs
-        else:           return None
+    for ry_max, ch in ENEMY_SPRITES.get(kind, ENEMY_SPRITES['zombie']):
+        if ry < ry_max:
+            if isinstance(ch, tuple):
+                patrol_ch, f0, f1 = ch
+                return (f1 if frame else f0) if state == 'chase' else patrol_ch
+            return ch
+    return None
