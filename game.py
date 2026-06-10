@@ -103,8 +103,9 @@ class Game:
         self.enemies  = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
         self.messages = []    # list of (text, expire_float)
         self.last_t   = time.time()
-        self.flash    = 0.0   # muzzle flash timer
-        self.shoot_cd = 0.0
+        self.flash     = 0.0   # muzzle flash timer
+        self.shoot_cd  = 0.0
+        self.dmg_flash = 0.0   # red border on hit
         self.running  = True
         self.won      = False
         self._unicode = True
@@ -195,8 +196,8 @@ class Game:
             if self._can_step(nx, p.y): p.x = nx
             if self._can_step(p.x, ny): p.y = ny
 
-        if curses.KEY_LEFT  in keys: p.angle -= rot
-        if curses.KEY_RIGHT in keys: p.angle += rot
+        if curses.KEY_LEFT  in keys: p.angle += rot
+        if curses.KEY_RIGHT in keys: p.angle -= rot
 
         if ord(' ') in keys or ord('f') in keys:
             self._shoot()
@@ -263,9 +264,10 @@ class Game:
 
     def update(self, dt: float):
         now = time.time()
-        self.shoot_cd = max(0.0, self.shoot_cd - dt)
-        self.flash    = max(0.0, self.flash    - dt)
-        self.messages = [(m, t) for m, t in self.messages if t > now]
+        self.shoot_cd  = max(0.0, self.shoot_cd  - dt)
+        self.flash     = max(0.0, self.flash     - dt)
+        self.dmg_flash = max(0.0, self.dmg_flash - dt)
+        self.messages  = [(m, t) for m, t in self.messages if t > now]
 
         alive = [e for e in self.enemies if e.state != 'dead']
         if not alive:
@@ -297,8 +299,9 @@ class Game:
                     if not self._wall(e.x, ny): e.y = ny
                 elif now - e.last_attack > 1.0:
                     dmg = random.randint(*e.dmg)
-                    p.health      -= dmg
-                    e.last_attack  = now
+                    p.health       -= dmg
+                    e.last_attack   = now
+                    self.dmg_flash  = 0.55
                     self._msg(f"OUCH! -{dmg}hp")
                     if p.health <= 0:
                         self.running = False
@@ -418,8 +421,10 @@ class Game:
         except curses.error:
             pass
 
+        self._draw_gun(view_h, w)
         self._draw_minimap(w)
         self._draw_hud(h, w, view_h)
+        self._draw_damage_border(view_h, w)
 
         # Combat messages (top-left, skip minimap area)
         for i, (msg, _) in enumerate(self.messages[-3:]):
@@ -488,7 +493,7 @@ class Game:
                 try: self.scr.addstr(oy + my, ox + mx, ch, color)
                 except curses.error: pass
 
-        # Player dot
+        # Player dot + direction indicator
         ppx = int(self.player.x * scale)
         ppy = int(self.player.y * scale)
         if 0 <= ppx < size and 0 <= ppy < size:
@@ -497,6 +502,18 @@ class Game:
                     curses.color_pair(4) | curses.A_BOLD)
             except curses.error:
                 pass
+
+        # Two look-ahead dots showing direction
+        dot_ch = '·' if self._unicode else '.'
+        for step in (2.0, 3.5):
+            fx = int((self.player.x + math.cos(self.player.angle) * step) * scale)
+            fy = int((self.player.y + math.sin(self.player.angle) * step) * scale)
+            if 0 <= fx < size and 0 <= fy < size and (fx != ppx or fy != ppy):
+                try:
+                    self.scr.addstr(oy + fy, ox + fx, dot_ch,
+                        curses.color_pair(4) | curses.A_BOLD)
+                except curses.error:
+                    pass
 
         # Enemy dots
         for e in self.enemies:
@@ -510,6 +527,61 @@ class Game:
                         curses.color_pair(1))
                 except curses.error:
                     pass
+
+    def _draw_gun(self, view_h, w):
+        """Draw weapon sprite at bottom-centre of the 3D view."""
+        cx = w // 2
+        firing = self.flash > 0
+        col = curses.color_pair(3) | curses.A_BOLD
+
+        if firing:
+            # Muzzle flash above barrel
+            flashes = [' *!*!* ', '  *!*  ', '   !   ']
+            fi = int((0.12 - self.flash) / 0.04) % len(flashes)
+            try:
+                self.scr.addstr(view_h - 5, cx - 3,
+                    flashes[fi], curses.color_pair(7) | curses.A_BOLD)
+            except curses.error:
+                pass
+            gun_lines = ['  ___  ', ' /===\\ ', '[=====]']
+            base_row  = view_h - 4
+        else:
+            gun_lines = ['  ___  ', ' /===\\ ', '[=====]']
+            base_row  = view_h - 3
+
+        for i, line in enumerate(gun_lines):
+            try:
+                self.scr.addstr(base_row + i, cx - 3, line, col)
+            except curses.error:
+                pass
+
+    def _draw_damage_border(self, view_h, w):
+        """Flash red border on the sides and top/bottom when player is hit."""
+        if self.dmg_flash <= 0:
+            return
+        t      = self.dmg_flash / 0.55   # 1.0 → 0.0
+        cols   = max(1, int(t * 5))
+        rows   = max(1, int(t * 3))
+        side   = '▌' if self._unicode else '|'
+        top_c  = '▄' if self._unicode else '-'
+        bot_c  = '▀' if self._unicode else '-'
+        attr   = curses.color_pair(1) | curses.A_BOLD
+
+        for row in range(view_h):
+            for c in range(cols):
+                try:
+                    self.scr.addstr(row, c,             side, attr)
+                    self.scr.addstr(row, w - 2 - c,     side, attr)
+                except curses.error:
+                    pass
+
+        strip = top_c * (w - 1) if self._unicode else top_c * (w - 1)
+        for r in range(rows):
+            try:
+                self.scr.addstr(r,              0, strip[:w-1], attr)
+                self.scr.addstr(view_h - 1 - r, 0, strip[:w-1], attr)
+            except curses.error:
+                pass
 
     def _draw_hud(self, h, w, view_h):
         p       = self.player
