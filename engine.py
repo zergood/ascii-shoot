@@ -19,10 +19,10 @@ import sprites as _spr
 
 # ── Window configuration ────────────────────────────────────────────────────
 
-COLS       = 120          # console width  (characters)
-ROWS       = 45           # console height (characters)
+COLS       = 160          # console width  (characters)
+ROWS       = 55           # console height (characters)
 FONT_PATH  = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'
-FONT_SIZE  = 14           # px — adjust for monitor DPI
+FONT_SIZE  = 12           # px — adjust for monitor DPI
 VIEW_ROWS  = ROWS - 3     # rows reserved for the 3D view
 
 # ── Colour palette (RGB) ────────────────────────────────────────────────────
@@ -356,29 +356,31 @@ class Renderer:
     # ---- Gun sprite --------------------------------------------------------
 
     def _draw_gun(self, game, view_h: int, w: int) -> None:
-        cx     = w // 2
-        firing = game.flash > 0
+        cx        = w // 2
+        firing    = game.flash > 0
+        gun_lines = _spr.GUN_SPRITES[game.player.weapon]
+        gun_w     = len(gun_lines[0])
+        gun_h     = len(gun_lines)
+        gun_x     = cx - gun_w // 2
 
         bob = 0
         if game._is_moving and not firing:
             bob = round(math.sin(game._walk_timer * 8.0) * 1.3)
 
-        gun_lines = _spr.GUN_SPRITES[game.player.weapon]
+        base_row = view_h - gun_h + bob
+
         if firing:
-            fi = int((0.12 - game.flash) / 0.04) % len(_spr.GUN_FLASH)
+            fi        = int((0.12 - game.flash) / 0.04) % len(_spr.GUN_FLASH)
+            flash_ln  = _spr.GUN_FLASH[fi]
+            flash_x   = cx - len(flash_ln) // 2
             try:
-                self.con.print(cx - 4, view_h - 5,
-                               _spr.GUN_FLASH[fi], fg=MAGENTA)
+                self.con.print(flash_x, base_row - 1, flash_ln, fg=MAGENTA)
             except Exception:
                 pass
-            base_row = view_h - 4
-        else:
-            base_row = view_h - 3
 
-        base_row += bob
         for i, line in enumerate(gun_lines):
             try:
-                self.con.print(cx - 4, base_row + i, line, fg=YELLOW)
+                self.con.print(gun_x, base_row + i, line, fg=YELLOW)
             except Exception:
                 pass
 
@@ -554,7 +556,7 @@ class Renderer:
     def _draw_messages(self, messages) -> None:
         for i, (msg, _) in enumerate(messages[-3:]):
             try:
-                self.con.print(1, 1 + i, msg[:38], fg=MAGENTA)
+                self.con.print(1, 1 + i, msg[:55], fg=MAGENTA)
             except Exception:
                 pass
 
