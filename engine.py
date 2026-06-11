@@ -252,7 +252,7 @@ class Renderer:
             if tz <= 0.1:
                 continue
             sx = int((w / 2) * (1.0 + tx / tz))
-            sh = min(abs(int(view_h / max(tz, 0.1) * 0.65)), view_h)
+            sh = min(abs(int(view_h / max(tz, 0.1) * 0.42)), view_h)
             visible.append((tz, e, sx, sh))
 
         FILL = '@#8Xx*:,.'
