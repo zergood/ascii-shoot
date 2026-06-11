@@ -255,11 +255,12 @@ class Renderer:
             sh = min(abs(int(view_h / max(tz, 0.1) * 0.30)), view_h)
             visible.append((tz, e, sx, sh))
 
-        FILL = '@#8Xx*:,.'
+        FILL = '@#8Xx*'   # only dense chars — no sparse edge chars
         max_sw = max(1, w // 5)
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
             sw   = min(max(1, sh * 3 // 5), max_sw)
-            top  = half_h - sh // 2
+            # Shift down so enemy stands on floor instead of floating at horizon
+            top  = half_h - sh // 4
             fog  = max(0.4, 1.0 - depth / 14.0)
             fg   = _dim(ENEMY_COLOR.get(e.kind, WHITE), fog)
             sw_range = max(sw - 1, 1)
@@ -279,7 +280,8 @@ class Renderer:
                     er  = math.sqrt(dcx * dcx * 0.75 + dcy * dcy)
                     spr_ch = _spr.enemy_char(
                         e.kind, ry_norm, rx, frame, e.state)
-                    if er > 1.0:
+                    if er > 0.90:
+                        # Near/outside ellipse edge: sprite chars only, no fill
                         if spr_ch is None:
                             continue
                         ch = spr_ch
@@ -287,7 +289,7 @@ class Renderer:
                         if spr_ch is not None:
                             ch = spr_ch
                         else:
-                            # Quadratic falloff: dense @ at core, sparse . at edge
+                            # Dense fill only — cut at 0.90 to avoid sparse black ring
                             idx = min(len(FILL) - 1, int(er * er * (len(FILL) - 1)))
                             ch  = FILL[idx]
                     try:
