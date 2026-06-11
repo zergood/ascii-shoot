@@ -19,10 +19,10 @@ import sprites as _spr
 
 # ── Window configuration ────────────────────────────────────────────────────
 
-COLS       = 160          # console width  (characters)
-ROWS       = 55           # console height (characters)
+COLS       = 200          # console width  (characters)
+ROWS       = 70           # console height (characters)
 FONT_PATH  = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'
-FONT_SIZE  = 12           # px — adjust for monitor DPI
+FONT_SIZE  = 10           # px — adjust for monitor DPI
 VIEW_ROWS  = ROWS - 3     # rows reserved for the 3D view
 
 # ── Colour palette (RGB) ────────────────────────────────────────────────────
@@ -192,17 +192,18 @@ class Renderer:
 
             z_buf[col] = dist
 
-            # 4-tier character by distance (Javidx9 style)
-            if   dist <= FAR_CLIP / 4:  ch = '█'
-            elif dist <= FAR_CLIP / 3:  ch = '▓'
-            elif dist <= FAR_CLIP / 2:  ch = '▒'
-            elif dist <= FAR_CLIP:      ch = '░'
-            else:                       ch = ' '
+            # Dense ASCII charset for wall shading (close → far)
+            _WC = '@&#8Xx*:,. '
+            if dist >= FAR_CLIP:
+                ch = ' '
+            else:
+                idx = int(dist / FAR_CLIP * (len(_WC) - 1))
+                ch  = _WC[idx]
 
             # Tile boundary: thin vertical seam where tile faces meet
             boundary = (wall_x < 0.04 or wall_x > 0.96)
             if boundary:
-                ch = '│'
+                ch = '|'
 
             base_fg = WALL_FG.get(wtype, WALL_FG[1])
 
@@ -254,7 +255,7 @@ class Renderer:
             sh = min(abs(int(view_h / tz)), view_h)
             visible.append((tz, e, sx, sh))
 
-        max_sw = max(1, w // 8)
+        max_sw = max(1, w // 5)
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
             sw   = min(max(1, sh // 2), max_sw)
             top  = half_h - sh // 2
