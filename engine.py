@@ -252,9 +252,10 @@ class Renderer:
             if tz <= 0.1:
                 continue
             sx = int((w / 2) * (1.0 + tx / tz))
-            sh = min(abs(int(view_h / tz)), view_h)
+            sh = min(abs(int(view_h / max(tz, 0.1) * 1.15)), view_h)
             visible.append((tz, e, sx, sh))
 
+        FILL = '@#8Xx*:,.'
         max_sw = max(1, w // 5)
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
             sw   = min(max(1, sh // 2), max_sw)
@@ -272,10 +273,24 @@ class Renderer:
                     row = top + row_off
                     if row < 0 or row >= view_h:
                         continue
-                    ch = _spr.enemy_char(
-                        e.kind, row_off / sh, rx, frame, e.state)
-                    if ch is None:
-                        continue
+                    ry_norm = row_off / sh
+                    dcx = (rx - 0.5) * 2
+                    dcy = (ry_norm - 0.5) * 2
+                    er  = math.sqrt(dcx * dcx * 0.85 + dcy * dcy)
+                    spr_ch = _spr.enemy_char(
+                        e.kind, ry_norm, rx, frame, e.state)
+                    if er > 1.0:
+                        # Outside ellipse: only draw if sprite has a char here
+                        if spr_ch is None:
+                            continue
+                        ch = spr_ch
+                    else:
+                        # Inside ellipse body
+                        if spr_ch is not None:
+                            ch = spr_ch
+                        else:
+                            idx = int(er * (len(FILL) - 1))
+                            ch  = FILL[idx]
                     try:
                         self.con.print(col, row, ch, fg=fg)
                     except Exception:

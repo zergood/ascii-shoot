@@ -105,125 +105,153 @@ ENEMY_W = 21      # width of all enemy sprite rows
 
 ENEMY_SPRITES_2D: dict[str, list[list[str]]] = {
 
-    # ── Zombie ────────────────────────────────────────────────────────────
+    # ── Zombie (21 wide, 20 rows) ─────────────────────────────────────────
     'zombie': [
         # frame 0 — standing
         _fit([
-            '      /~~~~~\\      ',
-            '     | . . . |     ',
-            '     |   ^   |     ',
-            '     | ----- |     ',
-            '      \\_____/      ',
-            '       |ZZZ|       ',
-            '  /----+ZZZ+----\\  ',
-            ' /     |ZZZ|     \\ ',
-            '|      |ZZZ|      |',
-            '|      |===|      |',
-            ' \\     |   |     / ',
-            '  \\    |   |    /  ',
-            '   \\   | | |   /   ',
-            '    \\  |/ \\|  /    ',
-            '       |   |       ',
-            '      /|   |\\      ',
-            '     / |   | \\     ',
-            '    /  |___|  \\    ',
+            '     /~~~~~~~\\     ',  # row 0  head top
+            '    |  O   O  |    ',  # row 1  eyes
+            '    |    ^    |    ',  # row 2  nose
+            '    |  ~~~~~  |    ',  # row 3  mouth
+            '    |_________|    ',  # row 4  chin
+            '     \\       /     ',  # row 5  neck
+            '  /--+-------+--\\ ',  # row 6  shoulders
+            ' /   |Z Z Z Z|   \\',  # row 7  shirt ZZZ
+            '|    |Z Z Z Z|    |',  # row 8  shirt ZZZ
+            '|    |Z Z Z Z|    |',  # row 9  shirt ZZZ
+            '|    |=======|    |',  # row 10 belt
+            ' \\   |       |   /',  # row 11 hips
+            '  \\  |       |  / ',  # row 12 upper legs
+            '     | |   | |     ',  # row 13 legs split
+            '     | |   | |     ',  # row 14 legs
+            '     | |   | |     ',  # row 15 legs
+            '    /| |   | |\\   ',  # row 16 calves
+            '   / | |   | | \\  ',  # row 17 calves
+            '  /  |_|   |_|  \\ ',  # row 18 feet
+            ' [___]       [___] ',  # row 19 feet flat
         ], ENEMY_W),
         # frame 1 — walking
         _fit([
-            '      /~~~~~\\      ',
-            '     | . . . |     ',
-            '     |   ^   |     ',
-            '     | ----- |     ',
-            '      \\_____/      ',
-            '       |ZZZ|       ',
-            '  /----+ZZZ+----\\  ',
-            ' /     |ZZZ|     \\ ',
-            '|      |ZZZ|      |',
-            '|      |===|      |',
-            ' \\     |   |     / ',
-            '  \\    |   |    /  ',
-            '   \\   | | |   /   ',
-            '    \\  |   |  /    ',
-            '       |   |       ',
-            '      /|   | \\     ',
-            '     / |   |  \\    ',
-            '    /  |___|   \\   ',
+            '     /~~~~~~~\\     ',  # row 0  head top
+            '    |  O   O  |    ',  # row 1  eyes
+            '    |    ^    |    ',  # row 2  nose
+            '    |  ~~~~~  |    ',  # row 3  mouth
+            '    |_________|    ',  # row 4  chin
+            '     \\       /     ',  # row 5  neck
+            '  /--+-------+--\\ ',  # row 6  shoulders
+            ' /   |Z Z Z Z|   \\',  # row 7  shirt ZZZ
+            '|    |Z Z Z Z|    |',  # row 8  shirt ZZZ
+            '|    |Z Z Z Z|    |',  # row 9  shirt ZZZ
+            '|    |=======|    |',  # row 10 belt
+            ' \\   |       |   /',  # row 11 hips
+            '  \\  |       |  / ',  # row 12 upper legs
+            '     | |   | |     ',  # row 13 legs split
+            '     | |   | |     ',  # row 14 legs
+            '    /| |   | |     ',  # row 15 stride L
+            '   / | |   | |\\   ',  # row 16 stride L
+            '  /  | |   | | \\  ',  # row 17 stride R
+            ' /   |_|   |_|  \\ ',  # row 18 feet
+            '[___]         [___]',  # row 19 feet flat
         ], ENEMY_W),
     ],
 
-    # ── Demon ─────────────────────────────────────────────────────────────
+    # ── Demon (21 wide, 22 rows) ───────────────────────────────────────────
     'demon': [
         # frame 0 — standing
         _fit([
-            ' /\\         /\\     ',
-            '/  \\_______/  \\    ',
-            '   | [D] [D] |     ',
-            '   |   ===   |     ',
-            '   |  /---\\  |     ',
-            '    \\_______/      ',
-            '   /{D_D_D_D}\\     ',
-            '  |{DDDDDDDDD}|    ',
-            '  |{DDDDDDDDD}|    ',
-            '  |{_________}|    ',
-            '  {|         |}    ',
-            ' //|         |\\\\   ',
-            '// |         | \\\\  ',
-            '/  |         |  \\  ',
-            '   |    |    |     ',
-            '   |   / \\   |     ',
-            '   |  /   \\  |     ',
-            '   |_/     \\_|     ',
+            '  /\\         /\\    ',  # row 0  horns
+            ' /  \\       /  \\   ',  # row 1  horns
+            '/    \\_____/    \\  ',  # row 2  horn base / head top
+            '|  D D D D D D  |  ',  # row 3  head fill
+            '|  [D]     [D]  |  ',  # row 4  eyes
+            '|   D  ===  D   |  ',  # row 5  nose bridge
+            '|   /D-----D\\   |  ',  # row 6  fanged mouth
+            ' \\_D_________D_/   ',  # row 7  jaw
+            '  /{D_D_D_D_D}\\   ',  # row 8  neck / chest top
+            ' |{D D D D D D}|  ',  # row 9  chest
+            '/|{D D D D D D}|\\ ',  # row 10 wide arms
+            '|{D_D_D_D_D_D_D}| ',  # row 11 mid body
+            '\\|{D D D D D D}|/ ',  # row 12 wide arms
+            ' |{D_D_D_D_D_D}|  ',  # row 13 lower body
+            '  |D D D D D D|   ',  # row 14 hips
+            '  |  |D D|  |     ',  # row 15 upper legs
+            '  | /|   |\ |     ',  # row 16 legs
+            '  |/ |   | \|     ',  # row 17 legs
+            '  /  |   |  \     ',  # row 18 calves
+            ' /   |   |   \    ',  # row 19 calves
+            '/    |___|    \   ',  # row 20 ankles
+            '[____]   [____]   ',  # row 21 clawed feet
         ], ENEMY_W),
-        # frame 1 — walking
+        # frame 1 — stomping
         _fit([
-            ' /\\         /\\     ',
-            '/  \\_______/  \\    ',
-            '   | [D] [D] |     ',
-            '   |   ===   |     ',
-            '   |  /---\\  |     ',
-            '    \\_______/      ',
-            '   /{D_D_D_D}\\     ',
-            '  |{DDDDDDDDD}|    ',
-            '  |{DDDDDDDDD}|    ',
-            '  |{_________}|    ',
-            '  {|         |}    ',
-            '  /|         |\\\\   ',
-            ' /  |       |  \\   ',
-            '/   |_______|   \\  ',
-            '    |       |       ',
-            '   /|       |\\      ',
-            '  / |       | \\     ',
-            ' /  |_______|  \\    ',
+            '  /\\         /\\    ',  # row 0  horns
+            ' /  \\       /  \\   ',  # row 1  horns
+            '/    \\_____/    \\  ',  # row 2  horn base
+            '|  D D D D D D  |  ',  # row 3  head fill
+            '|  [D]     [D]  |  ',  # row 4  eyes
+            '|   D  ===  D   |  ',  # row 5  nose bridge
+            '|   /D-----D\\   |  ',  # row 6  fanged mouth
+            ' \\_D_________D_/   ',  # row 7  jaw
+            '  /{D_D_D_D_D}\\   ',  # row 8  chest top
+            ' |{D D D D D D}|  ',  # row 9  chest
+            '/|{D D D D D D}|\\ ',  # row 10 wide arms
+            '|{D_D_D_D_D_D_D}| ',  # row 11 mid body
+            '\\|{D D D D D D}|/ ',  # row 12 wide arms
+            ' |{D_D_D_D_D_D}|  ',  # row 13 lower body
+            '  |D D D D D D|   ',  # row 14 hips
+            '  |  |D D|  |     ',  # row 15 upper legs
+            '  | /|   |  |     ',  # row 16 stomp L raised
+            ' /|/ |   |  |     ',  # row 17 stomp L raised
+            '/   |   |  |     ',  # row 18 stomp L
+            '    /   |   |\    ',  # row 19 stomp R
+            '   /    |___|  \  ',  # row 20 ankles
+            '  [____]   [____] ',  # row 21 clawed feet
         ], ENEMY_W),
     ],
 
-    # ── Imp ───────────────────────────────────────────────────────────────
+    # ── Imp (21 wide, 18 rows) ─────────────────────────────────────────────
     'imp': [
         # frame 0 — hovering
         _fit([
-            '  ^  [^.^]  ^      ',
-            '  |   (o.o)  |     ',
-            ' /|  |-_-_-| |\\    ',
-            '/ |   \\___/  | \\   ',
-            '  |   ~I~I~  |     ',
-            ' /| --{I_I}--| \\   ',
-            '/ |   |I_I|  |  \\  ',
-            '  |   |___|  |     ',
-            '  |  /|| ||\\  |    ',
-            '  | /  |_|  \\ |    ',
+            '    *  [^.^]  *    ',  # row 0  antenna + head
+            '   /|  (o.o)  |\   ',  # row 1  eyes
+            '  / |  |-_-|  | \  ',  # row 2  face markings
+            ' =--+--\___/--+--= ',  # row 3  wings out
+            '=====  ~I~I~  =====',  # row 4  wings full + body
+            ' =--+--{I_I}--+--= ',  # row 5  wings + midsection
+            '  \ |  |I_I|  | /  ',  # row 6  body
+            '   \|  |_I_|  |/   ',  # row 7  lower body
+            '    |  /| |\  |    ',  # row 8  legs spread
+            '    | / | | \ |    ',  # row 9  legs
+            '    |/  | |  \|    ',  # row 10 legs lower
+            '    /   | |   \    ',  # row 11 feet spread
+            '   /    |_|    \   ',  # row 12 feet
+            '  *      |      *  ',  # row 13 tail tip
+            '         |         ',  # row 14 tail
+            '        /|\        ',  # row 15 tail spread
+            '       * | *       ',  # row 16 tail tips
+            '         *         ',  # row 17 bottom tip
         ], ENEMY_W),
         # frame 1 — lunging
         _fit([
-            '    [^.^]          ',
-            '    (o.o) -->      ',
-            '   |-_-_-|  -->    ',
-            '    \\___/   -->    ',
-            '    ~I~I~          ',
-            '  --{I_I}--        ',
-            '    |I_I|          ',
-            '    |___|          ',
-            '   /|  |\\  -->     ',
-            '  / |  |   -->     ',
+            '  *    [^.^]       ',  # row 0  antenna + head
+            ' /|    (o.o) -->   ',  # row 1  eyes + lunge
+            '/  |   |-_-| -->   ',  # row 2  face + lunge
+            '=--+---\___/ -->   ',  # row 3  wing + body
+            '====   ~I~I~  -->  ',  # row 4  wings + body
+            '=--+---{I_I}--     ',  # row 5  midsection
+            '  \ |  |I_I|       ',  # row 6  body
+            '   \|  |_I_|       ',  # row 7  lower body
+            '   /   /| |\ -->   ',  # row 8  legs lunging
+            '  /   / | | \ -->  ',  # row 9  legs
+            ' /   /  | |  \     ',  # row 10 legs lower
+            '/    |  |_|   \    ',  # row 11 feet spread
+            '     |   |    |\   ',  # row 12 feet
+            '     *   |    | *  ',  # row 13 tail
+            '         |         ',  # row 14 tail
+            '        /|\        ',  # row 15 tail spread
+            '       * | *       ',  # row 16 tail tips
+            '         *         ',  # row 17 bottom tip
         ], ENEMY_W),
     ],
 }
