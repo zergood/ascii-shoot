@@ -26,7 +26,6 @@ FONT_SIZE  = 14           # px — adjust for monitor DPI
 VIEW_ROWS  = ROWS - 3     # rows reserved for the 3D view
 
 # ── Colour palette (RGB) ────────────────────────────────────────────────────
-# All colours as (R, G, B) tuples; engine never uses curses colour pairs.
 
 BLACK   = (  0,   0,   0)
 WHITE   = (220, 220, 220)
@@ -40,24 +39,28 @@ MAGENTA = (180,  60, 200)
 GREY    = ( 80,  80,  80)
 DKGREY  = ( 30,  30,  30)
 
-SKY_TOP    = ( 20,  20,  60)
-SKY_BOT    = ( 40,  40, 100)
-FLOOR_TOP  = ( 35,  25,  15)
-FLOOR_BOT  = ( 20,  15,  10)
+SKY_TOP    = ( 12,  12,  35)
+SKY_BOT    = ( 28,  28,  72)
+FLOOR_TOP  = ( 45,  35,  20)
+FLOOR_BOT  = ( 18,  14,   8)
 
+# Muted wall colours — less saturated than before so walls don't overwhelm
 WALL_FG: dict[int, tuple] = {
-    1: YELLOW,
-    2: GREEN,
-    3: YELLOW,
-    4: RED,
-    5: CYAN,    # door
+    1: (155, 125,  65),  # warm stone
+    2: ( 50, 145,  70),  # moss green
+    3: (135,  85,  50),  # brown brick
+    4: (185,  55,  55),  # dark red
+    5: ( 50, 175, 190),  # cyan door
 }
 
 ENEMY_COLOR: dict[str, tuple] = {
-    'zombie': RED,
-    'demon':  MAGENTA,
-    'imp':    ORANGE,
+    'zombie': (235,  55,  55),
+    'demon':  (210,  70, 225),
+    'imp':    (245, 165,  40),
 }
+
+# Maximum render distance (walls become empty beyond this)
+FAR_CLIP = 16.0
 
 # ── Key mapping ─────────────────────────────────────────────────────────────
 
@@ -111,7 +114,7 @@ class Renderer:
         view_angle = game.player.angle + game.recoil + shake
 
         con.clear()
-        self._draw_sky_floor(view_h, half_h, w)
+        self._draw_sky_floor(game.player, view_angle, view_h, half_h, w)
         z_buf = [999.0] * w
         self._draw_walls(game.world, game.player, view_angle, view_h, half_h, w, z_buf)
         self._draw_live_enemies(game, z_buf, view_angle, view_h, half_h, w, now)
@@ -128,64 +131,99 @@ class Renderer:
 
     # ---- Sky / floor --------------------------------------------------------
 
-    def _draw_sky_floor(self, view_h: int, half_h: int, w: int) -> None:
+    def _draw_sky_floor(self, player, view_angle: float,
+                        view_h: int, half_h: int, w: int) -> None:
         con = self.con
+
+        # ── Ceiling: clean gradient, no characters ──────────────────────────
         for row in range(half_h):
             t  = row / max(half_h - 1, 1)
-            fg = _lerp_color(SKY_TOP, SKY_BOT, t)
-            for col in range(w):
-                con.print(col, row, ' ', bg=fg)
-
-        for row in range(half_h, view_h):
-            t  = (row - half_h) / max(view_h - half_h - 1, 1)
-            bg = _lerp_color(FLOOR_TOP, FLOOR_BOT, t)
+            bg = _lerp_color(SKY_TOP, SKY_BOT, t)
             for col in range(w):
                 con.print(col, row, ' ', bg=bg)
+
+        # ── Floor: perspective-correct tile casting ──────────────────────────
+        # Camera vectors (same as wall raycaster)
+        dx  = math.cos(view_angle);  dy  = math.sin(view_angle)
+        px  =  0.66 * dy;            py  = -0.66 * dx
+        rlx = dx - px;               rly = dy - py   # leftmost ray
+        rrx = dx + px;               rry = dy + py   # rightmost ray
+
+        for row in range(half_h, view_h):
+            p_row = row - half_h + 0.5          # rows below horizon (≥ 0.5)
+            row_dist = half_h / p_row           # world distance to this row
+
+            step_x = row_dist * (rrx - rlx) / w
+            step_y = row_dist * (rry - rly) / w
+            fx = player.x + row_dist * rlx
+            fy = player.y + row_dist * rly
+
+            fog = max(0.12, 1.0 - row_dist / 10.0)
+            t   = (row - half_h) / max(view_h - half_h - 1, 1)
+            bg  = _lerp_color(FLOOR_TOP, FLOOR_BOT, t)
+
+            for col in range(w):
+                tx = fx - math.floor(fx)        # fractional tile position
+                ty = fy - math.floor(fy)
+
+                at_edge = tx < 0.06 or tx > 0.94 or ty < 0.06 or ty > 0.94
+                if at_edge:
+                    ch = '+'
+                    fg = _dim(FLOOR_TOP, fog * 0.9)
+                else:
+                    ch = '·'
+                    fg = _dim(FLOOR_TOP, fog * 0.45)
+
+                try:
+                    con.print(col, row, ch, fg=fg, bg=bg)
+                except Exception:
+                    pass
+
+                fx += step_x
+                fy += step_y
 
     # ---- Walls --------------------------------------------------------------
 
     def _draw_walls(self, world, player, view_angle,
                     view_h, half_h, w, z_buf) -> None:
-        shade = _spr.SHADE_UNI
         for col in range(w):
             dist, wtype, side, wall_x = world.cast_ray(
                 player.x, player.y, view_angle, col, w)
 
-            wh  = min(int(view_h / dist), view_h)
-            top = max(0,      half_h - wh // 2)
-            bot = min(view_h, half_h + wh // 2)
             z_buf[col] = dist
 
-            # shade index by distance
-            si  = min(int(dist / 2.8), len(shade) - 1)
-            ch  = shade[si]
-            base_fg = WALL_FG.get(wtype, YELLOW)
-            # darker for N/S faces
+            # 4-tier character by distance (Javidx9 style)
+            if   dist <= FAR_CLIP / 4:  ch = '█'
+            elif dist <= FAR_CLIP / 3:  ch = '▓'
+            elif dist <= FAR_CLIP / 2:  ch = '▒'
+            elif dist <= FAR_CLIP:      ch = '░'
+            else:                       ch = ' '
+
+            # Tile boundary: thin vertical seam where tile faces meet
+            boundary = (wall_x < 0.04 or wall_x > 0.96)
+            if boundary:
+                ch = '│'
+
+            base_fg = WALL_FG.get(wtype, WALL_FG[1])
+
+            # N/S faces slightly dimmer (directional shading)
             if side == 1:
-                base_fg = _dim(base_fg, 0.65)
+                base_fg = _dim(base_fg, 0.60)
 
-            # fog: fade to dark beyond 7 units
-            fog_t = max(0.0, min(1.0, (dist - 5.0) / 9.0))
-            fg    = _lerp_color(base_fg, DKGREY, fog_t)
+            if boundary:
+                base_fg = _dim(base_fg, 0.40)
 
-            # brightness: closer = brighter
-            bright = max(0.4, 1.0 - dist / 14.0)
-            fg = _dim(fg, bright)
+            # Linear fog: full bright at dist=0, dim at dist=FAR_CLIP
+            fog = max(0.20, 1.0 - dist / FAR_CLIP)
+            fg  = _dim(base_fg, fog)
 
-            wall_h = max(1, bot - top)
+            wh  = min(int(view_h / max(dist, 0.05)), view_h)
+            top = max(0,      half_h - wh // 2)
+            bot = min(view_h, half_h + wh // 2)
+
             for row in range(top, bot):
-                # brick mortar lines
-                row_f    = (row - top) / wall_h
-                brick_r  = int(row_f * 3)
-                offset   = 0.5 if brick_r % 2 else 0.0
-                mortar_x = ((wall_x + offset) * 2) % 1.0
-                mortar_y = (row_f * 3) % 1.0
-                is_mortar = (mortar_y < 0.10 or
-                             mortar_x < 0.07 or mortar_x > 0.93)
-                draw_ch = shade[min(len(shade) - 1, si + 1)] if is_mortar else ch
-                draw_fg = _dim(fg, 0.7) if is_mortar else fg
                 try:
-                    self.con.print(col, row, draw_ch, fg=draw_fg)
+                    self.con.print(col, row, ch, fg=fg, bg=BLACK)
                 except Exception:
                     pass
 
@@ -424,7 +462,7 @@ class Renderer:
     # ---- HUD ---------------------------------------------------------------
 
     def _draw_hud(self, game, h: int, w: int, view_h: int) -> None:
-        from game import WEAPONS
+        from game import WEAPONS, WAVE_MAX
         p      = game.player
         y      = view_h
         hp_pct = max(0, p.health) / 100.0
@@ -434,15 +472,17 @@ class Renderer:
         hp_fg  = (RED    if hp_pct < 0.3 else
                   ORANGE if hp_pct < 0.6 else GREEN)
 
-        wdef    = WEAPONS[p.weapon]
-        wname   = f'[{p.weapon+1}]{wdef["name"]}'
-        bullets = p.ammo.get('bullet', 0)
-        shells  = p.ammo.get('shell',  0)
-        alive   = sum(1 for e in game.enemies if e.state != 'dead')
-        sep     = '═' * (w - 1)
+        wdef      = WEAPONS[p.weapon]
+        wname     = f'[{p.weapon+1}]{wdef["name"]}'
+        bullets   = p.ammo.get('bullet', 0)
+        shells    = p.ammo.get('shell',  0)
+        alive     = sum(1 for e in game.enemies if e.state != 'dead')
+        wave_num  = getattr(game, 'wave', 1)
+        sep       = '═' * (w - 1)
 
-        combo_str  = f'  x{p.combo} COMBO!' if p.combo > 1 else ''
-        pause_str  = '  [PAUSED]'           if game.paused  else ''
+        combo_str = f'  x{p.combo} COMBO!' if p.combo > 1 else ''
+        pause_str = '  [PAUSED]'           if game.paused  else ''
+        wave_str  = f'WAVE {wave_num}/{WAVE_MAX}'
 
         try:
             self.con.print(0,  y,     sep[:w-1],                  fg=YELLOW)
@@ -453,6 +493,8 @@ class Renderer:
                 self.con.print(54, y + 1, combo_str,               fg=MAGENTA)
             if pause_str:
                 self.con.print(70, y + 1, pause_str,               fg=CYAN)
+            self.con.print(w - len(wave_str) - 2, y + 1,
+                           wave_str,                               fg=CYAN)
             self.con.print(1,  y + 2,
                            f'BULLET:{bullets:3d}  SHELL:{shells:2d}',
                            fg=YELLOW)
@@ -645,22 +687,27 @@ class Renderer:
             if isinstance(event, (tcod.event.KeyDown, tcod.event.Quit)):
                 return
 
-    def wave_clear_screen(self, ctx: tcod.context.Context) -> None:
-        """Brief victory flash before the end screen. Auto-advances after 2 s."""
+    def wave_clear_screen(self, ctx: tcod.context.Context,
+                          wave_num: int = 1,
+                          next_wave: int | None = None) -> None:
+        """Brief between-wave flash. Auto-advances after 2 s or any key."""
+        next_str = (f'  Preparing wave {next_wave}…'
+                    if next_wave else '  Preparing final wave…')
         lines = [
-            '╔══════════════════════════╗',
-            '║                          ║',
-            '║   ★  L E V E L  C L E A R  ★   ║',
-            '║                          ║',
-            '║   All enemies defeated!  ║',
-            '║                          ║',
-            '╚══════════════════════════╝',
+            '╔══════════════════════════════╗',
+            '║                              ║',
+            f'║   ★  W A V E  {wave_num}  C L E A R  ★  ║',
+            '║                              ║',
+            '║   All enemies defeated!      ║',
+            next_str[:32].ljust(30).join(['║  ', '  ║']),
+            '║                              ║',
+            '╚══════════════════════════════╝',
         ]
-        cw   = COLS // 2
-        cy   = ROWS // 2 - len(lines) // 2
-        bw   = max(len(l) for l in lines)
-        bx   = cw - bw // 2
-        deadline = time.time() + 2.0
+        cw  = COLS // 2
+        bw  = max(len(l) for l in lines)
+        bx  = cw - bw // 2
+        cy  = ROWS // 2 - len(lines) // 2
+        deadline = time.time() + 2.5
 
         while time.time() < deadline:
             self.con.clear()
@@ -682,6 +729,7 @@ class Renderer:
     def end_screen(self, game, ctx: tcod.context.Context,
                    scores: list[int]) -> None:
         """Show game-over / win screen with stats and highscores."""
+        from game import WAVE_MAX
         self.con.clear()
         is_win    = game.won
         title     = '  YOU  WIN!  ' if is_win else '  GAME  OVER  '
@@ -690,11 +738,13 @@ class Renderer:
         total     = len(game.enemies)
         elapsed   = int(time.time() - getattr(game, 'start_t', time.time()))
         mins, sec = divmod(elapsed, 60)
+        wave_num  = getattr(game, 'wave', 1)
         is_new    = bool(scores and game.player.score == scores[0]
                         and game.player.score > 0)
 
         stats = [
             f'  Score   : {game.player.score}',
+            f'  Wave    : {wave_num} / {WAVE_MAX}',
             f'  Kills   : {kills} / {total}',
             f'  Time    : {mins:02d}:{sec:02d}',
         ]

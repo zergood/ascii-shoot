@@ -2,12 +2,14 @@
 """Unit tests for game.py — no curses required."""
 
 import math
+import random
 import unittest
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from game import World, Player, Enemy, Projectile, WEAPONS, WORLD_MAP, MAP_W, MAP_H
+from game import (World, Player, Enemy, Projectile, WEAPONS, WORLD_MAP,
+                  MAP_W, MAP_H, generate_map, WAVE_MAX)
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +536,68 @@ class TestHitscan(unittest.TestCase):
         e = Enemy(3.5, 1.5)
         best, _ = _hitscan(p, [e], w)
         self.assertIsNone(best)
+
+
+# ---------------------------------------------------------------------------
+# Procedural map generation
+# ---------------------------------------------------------------------------
+
+class TestMapGen(unittest.TestCase):
+
+    def _gen(self, wave: int = 1, seed: int = 42):
+        return generate_map(wave, random.Random(seed))
+
+    def test_returns_four_items(self):
+        result = self._gen()
+        self.assertEqual(len(result), 4)
+
+    def test_grid_outer_border_is_solid(self):
+        grid, _, _, _ = self._gen()
+        H, W = len(grid), len(grid[0])
+        for x in range(W):
+            self.assertNotEqual(grid[0][x],   0, f'top border open x={x}')
+            self.assertNotEqual(grid[H-1][x], 0, f'bottom border open x={x}')
+        for y in range(H):
+            self.assertNotEqual(grid[y][0],   0, f'left border open y={y}')
+            self.assertNotEqual(grid[y][W-1], 0, f'right border open y={y}')
+
+    def test_player_start_in_open_cell(self):
+        grid, (px, py), _, _ = self._gen()
+        self.assertEqual(grid[int(py)][int(px)], 0)
+
+    def test_has_enemies(self):
+        _, _, enemies, _ = self._gen()
+        self.assertGreater(len(enemies), 0)
+
+    def test_enemy_spawns_on_open_cell(self):
+        grid, _, enemies, _ = self._gen()
+        for ex, ey, kind in enemies:
+            self.assertEqual(grid[int(ey)][int(ex)], 0,
+                             f'{kind} spawned on wall at ({ex},{ey})')
+
+    def test_wave5_more_enemies_than_wave1(self):
+        _, _, e1, _ = generate_map(1, random.Random(42))
+        _, _, e5, _ = generate_map(5, random.Random(42))
+        self.assertGreater(len(e5), len(e1))
+
+    def test_has_pickups(self):
+        _, _, _, pickups = self._gen()
+        self.assertGreater(len(pickups), 0)
+
+    def test_world_queries_work_on_generated_grid(self):
+        grid, (px, py), _, _ = self._gen()
+        w = World(grid)
+        self.assertFalse(w.is_wall(px, py))
+        self.assertTrue(w.is_wall(0.5, 0.5))
+
+    def test_wave_max_constant(self):
+        self.assertGreaterEqual(WAVE_MAX, 3)
+
+    def test_different_seeds_differ(self):
+        g1, _, _, _ = generate_map(1, random.Random(1))
+        g2, _, _, _ = generate_map(1, random.Random(999))
+        # Grids won't be identical (though theoretically possible; vanishingly unlikely)
+        self.assertNotEqual(g1, g2)
 
 
 if __name__ == '__main__':

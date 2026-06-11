@@ -72,6 +72,145 @@ WEAPONS = [
      'ammo_type': 'bullet', 'cost': 1, 'pellets': 1},
 ]
 
+WAVE_MAX   = 5
+MAP_GEN_W  = 32
+MAP_GEN_H  = 24
+
+
+def generate_map(wave: int, rng: random.Random):
+    """Procedurally generate a level for the given wave number.
+
+    Returns (grid, player_start_xy, enemy_spawns, pickup_spawns).
+    """
+    W, H = MAP_GEN_W, MAP_GEN_H
+    grid = [[1] * W for _ in range(H)]
+    rooms: list[tuple[int, int, int, int]] = []
+
+    # Place up to 10 non-overlapping rooms (with 2-cell padding)
+    for _ in range(100):
+        if len(rooms) >= 10:
+            break
+        rw = rng.randint(4, 8)
+        rh = rng.randint(3, 6)
+        rx = rng.randint(2, W - rw - 2)
+        ry = rng.randint(2, H - rh - 2)
+        ok = all(
+            rx + rw + 2 <= orx or orx + orw + 2 <= rx or
+            ry + rh + 2 <= ory or ory + orh + 2 <= ry
+            for orx, ory, orw, orh in rooms
+        )
+        if ok:
+            rooms.append((rx, ry, rw, rh))
+
+    if not rooms:
+        rooms = [(3, 3, 6, 5)]
+
+    # Paint room-border cells with wall-type variants before carving interiors
+    wtypes = [rng.choice([1, 2, 3, 4]) for _ in rooms]
+    for i, (rx, ry, rw, rh) in enumerate(rooms):
+        wt = wtypes[i]
+        for y in range(max(1, ry - 1), min(H - 1, ry + rh + 1)):
+            for x in range(max(1, rx - 1), min(W - 1, rx + rw + 1)):
+                if grid[y][x] == 1:
+                    grid[y][x] = wt
+
+    # Carve room interiors
+    for rx, ry, rw, rh in rooms:
+        for y in range(ry, ry + rh):
+            for x in range(rx, rx + rw):
+                grid[y][x] = 0
+
+    def _ctr(r: tuple) -> tuple[int, int]:
+        return r[0] + r[2] // 2, r[1] + r[3] // 2
+
+    def _carve(x1: int, y1: int, x2: int, y2: int) -> None:
+        """Carve an L-shaped corridor, never touching the outer border."""
+        if rng.random() < 0.5:
+            for x in range(min(x1, x2), max(x1, x2) + 1):
+                if 1 <= y1 <= H - 2 and 1 <= x <= W - 2:
+                    grid[y1][x] = 0
+            for y in range(min(y1, y2), max(y1, y2) + 1):
+                if 1 <= y <= H - 2 and 1 <= x2 <= W - 2:
+                    grid[y][x2] = 0
+        else:
+            for y in range(min(y1, y2), max(y1, y2) + 1):
+                if 1 <= y <= H - 2 and 1 <= x1 <= W - 2:
+                    grid[y][x1] = 0
+            for x in range(min(x1, x2), max(x1, x2) + 1):
+                if 1 <= y2 <= H - 2 and 1 <= x <= W - 2:
+                    grid[y2][x] = 0
+
+    # Connect rooms in a chain, then add some extra loop connections
+    for i in range(len(rooms) - 1):
+        ax, ay = _ctr(rooms[i])
+        bx, by = _ctr(rooms[i + 1])
+        _carve(ax, ay, bx, by)
+
+    if len(rooms) >= 2:
+        for _ in range(max(1, len(rooms) // 3)):
+            i, j = rng.sample(range(len(rooms)), 2)
+            ax, ay = _ctr(rooms[i])
+            bx, by = _ctr(rooms[j])
+            _carve(ax, ay, bx, by)
+
+    # Add doors at natural chokepoints (wall cell flanked by open cells)
+    door_limit = 3 + wave // 2
+    cands: list[tuple[int, int]] = []
+    for y in range(1, H - 1):
+        for x in range(1, W - 1):
+            if grid[y][x] == 0:
+                continue
+            if ((grid[y][x - 1] == 0 and grid[y][x + 1] == 0) or
+                    (grid[y - 1][x] == 0 and grid[y + 1][x] == 0)):
+                cands.append((x, y))
+    rng.shuffle(cands)
+    for x, y in cands[:door_limit]:
+        grid[y][x] = 5
+
+    # ── Spawn points ────────────────────────────────────────────────────────
+    rx0, ry0, rw0, rh0 = rooms[0]
+    psx = rx0 + rw0 / 2.0
+    psy = ry0 + rh0 / 2.0
+
+    kinds = (['zombie'] * (2 + wave) +
+             ['demon']  * max(0, wave - 1) +
+             ['imp']    * max(0, wave - 2))
+    rng.shuffle(kinds)
+
+    # Prefer cells far from player; fall back to any open cell if needed
+    all_open = [
+        (x + 0.5, y + 0.5)
+        for y in range(1, H - 1)
+        for x in range(1, W - 1)
+        if grid[y][x] == 0
+    ]
+    far_pts = sorted(
+        all_open,
+        key=lambda p: -((p[0] - psx) ** 2 + (p[1] - psy) ** 2)
+    )
+    # Only use cells beyond 5.5 units; if insufficient, use sorted list anyway
+    truly_far = [p for p in far_pts
+                 if math.sqrt((p[0] - psx) ** 2 + (p[1] - psy) ** 2) > 5.5]
+    spawn_pool = truly_far if len(truly_far) >= len(kinds) else far_pts
+    rng.shuffle(spawn_pool)
+
+    enemy_spawns = [
+        (spawn_pool[i][0], spawn_pool[i][1], k)
+        for i, k in enumerate(kinds)
+        if i < len(spawn_pool)
+    ]
+
+    used = set(spawn_pool[:len(enemy_spawns)])
+    pick_pts = [p for p in all_open if p not in used]
+    rng.shuffle(pick_pts)
+    n_picks = 6 + wave // 2
+    pickup_spawns = [
+        (pick_pts[i][0], pick_pts[i][1], 'hp' if i % 2 == 0 else 'ammo')
+        for i in range(min(n_picks, len(pick_pts)))
+    ]
+
+    return grid, (psx, psy), enemy_spawns, pickup_spawns
+
 
 # ---------------------------------------------------------------------------
 # World  — map data + spatial queries, no curses
@@ -198,9 +337,9 @@ class Projectile:
 # ---------------------------------------------------------------------------
 
 class Player:
-    def __init__(self):
-        self.x       = 2.5
-        self.y       = 2.5
+    def __init__(self, x: float = 2.5, y: float = 2.5):
+        self.x       = x
+        self.y       = y
         self.angle   = 0.0
         self.health  = 100
         self.ammo    = {'bullet': 50, 'shell': 15}
@@ -308,11 +447,18 @@ class Enemy:
 
 class Game:
 
-    def __init__(self, renderer, input_handler):
-        self.world   = World()
-        self.player  = Player()
-        self.enemies     = [Enemy(x, y, k) for x, y, k in ENEMY_SPAWNS]
-        self.pickups     = list(PICKUP_SPAWNS)
+    def __init__(self, renderer, input_handler,
+                 wave: int = 1,
+                 grid=None,
+                 player_start=None,
+                 enemy_spawns=None,
+                 pickup_spawns=None):
+        self.wave    = wave
+        self.world   = World(grid)
+        ps = player_start or (2.5, 2.5)
+        self.player  = Player(ps[0], ps[1])
+        self.enemies = [Enemy(x, y, k) for x, y, k in (enemy_spawns or ENEMY_SPAWNS)]
+        self.pickups = list(pickup_spawns or PICKUP_SPAWNS)
         self.projectiles: list[Projectile] = []
         self.corpses     = []
         self.messages    = []
@@ -491,6 +637,9 @@ class Game:
         p = self.player
         if p.combo > 0 and p.combo_t > 0 and now > p.combo_t:
             p.combo = 0
+        if p.health <= 0:
+            self.running = False
+            return
 
         # Update projectiles
         proj_dmg = 0
@@ -512,7 +661,8 @@ class Game:
 
         alive = [e for e in self.enemies if e.state != 'dead']
         if not alive:
-            self.won = self.running = False
+            self.won     = True
+            self.running = False
             return
 
         for e in alive:
@@ -606,13 +756,45 @@ def main():
                 renderer.scores_screen(ctx, load_scores())
                 continue
 
-            # --- Play ---
-            game = Game(renderer, inp)
-            game.run(ctx)
-            save_score(game.player.score)
-            if game.won:
-                renderer.wave_clear_screen(ctx)
-            renderer.end_screen(game, ctx, load_scores())
+            # ── Wave run ────────────────────────────────────────────────────
+            rng          = random.Random()
+            carry_score  = 0
+            carry_ammo   = {'bullet': 50, 'shell': 15}
+            carry_weapon = 0
+            carry_health = 100
+
+            for wave in range(1, WAVE_MAX + 1):
+                grid, pstart, espawns, pspawns = generate_map(wave, rng)
+
+                inp.clear()
+                game = Game(renderer, inp, wave=wave, grid=grid,
+                            player_start=pstart, enemy_spawns=espawns,
+                            pickup_spawns=pspawns)
+                game.player.score  = carry_score
+                game.player.ammo   = dict(carry_ammo)
+                game.player.weapon = carry_weapon
+                game.player.health = carry_health
+
+                game.run(ctx)
+                save_score(game.player.score)
+
+                if not game.won:
+                    renderer.end_screen(game, ctx, load_scores())
+                    break
+
+                # Wave cleared — carry state + refill bonus
+                carry_score  = game.player.score
+                carry_ammo   = dict(game.player.ammo)
+                carry_ammo['bullet'] = min(99, carry_ammo.get('bullet', 0) + 20)
+                carry_ammo['shell']  = min(30, carry_ammo.get('shell',  0) + 5)
+                carry_weapon = game.player.weapon
+                carry_health = min(100, game.player.health + 30)
+
+                if wave < WAVE_MAX:
+                    renderer.wave_clear_screen(ctx, wave, wave + 1)
+                else:
+                    renderer.end_screen(game, ctx, load_scores())
+
             inp.clear()
 
 
