@@ -252,13 +252,13 @@ class Renderer:
             if tz <= 0.1:
                 continue
             sx = int((w / 2) * (1.0 + tx / tz))
-            sh = min(abs(int(view_h / max(tz, 0.1) * 1.15)), view_h)
+            sh = min(abs(int(view_h / max(tz, 0.1) * 0.65)), view_h)
             visible.append((tz, e, sx, sh))
 
         FILL = '@#8Xx*:,.'
         max_sw = max(1, w // 5)
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
-            sw   = min(max(1, sh // 2), max_sw)
+            sw   = min(max(1, sh * 3 // 5), max_sw)
             top  = half_h - sh // 2
             fog  = max(0.4, 1.0 - depth / 14.0)
             fg   = _dim(ENEMY_COLOR.get(e.kind, WHITE), fog)
@@ -276,20 +276,19 @@ class Renderer:
                     ry_norm = row_off / sh
                     dcx = (rx - 0.5) * 2
                     dcy = (ry_norm - 0.5) * 2
-                    er  = math.sqrt(dcx * dcx * 0.85 + dcy * dcy)
+                    er  = math.sqrt(dcx * dcx * 0.75 + dcy * dcy)
                     spr_ch = _spr.enemy_char(
                         e.kind, ry_norm, rx, frame, e.state)
                     if er > 1.0:
-                        # Outside ellipse: only draw if sprite has a char here
                         if spr_ch is None:
                             continue
                         ch = spr_ch
                     else:
-                        # Inside ellipse body
                         if spr_ch is not None:
                             ch = spr_ch
                         else:
-                            idx = int(er * (len(FILL) - 1))
+                            # Quadratic falloff: dense @ at core, sparse . at edge
+                            idx = min(len(FILL) - 1, int(er * er * (len(FILL) - 1)))
                             ch  = FILL[idx]
                     try:
                         self.con.print(col, row, ch, fg=fg)
