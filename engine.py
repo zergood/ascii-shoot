@@ -260,7 +260,7 @@ class Renderer:
             if tz <= 0.1:
                 continue
             sx = int((w / 2) * (1.0 + tx / tz))
-            sh = min(abs(int(view_h / max(tz, 0.1) * 0.30)), view_h)
+            sh = min(abs(int(view_h / max(tz, 0.1) * 0.55)), view_h)
             visible.append((tz, e, sx, sh))
 
         DETAIL_FG = (25, 18, 18)   # dark glyphs on the coloured body
