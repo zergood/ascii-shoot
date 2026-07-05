@@ -26,61 +26,61 @@ GUN_H = 15
 
 GUN_SPRITES = [
 
-    # ── 0  Pistol ─────────────────────────────────────────────────────────
+    # ── 0  Pistol — first-person, held two-handed, barrel into screen ──────
     _fit([
         '',
-        '               .----------.              ',
-        '  ____________/            \\____________ ',
-        ' /  [        P I S T O L        ]       \\',
-        '|    |__________________________________|',
-        '|    |__________________________________| ',
-        ' \\             |          |            / ',
-        '               |  [grip]  |              ',
-        '              /|__________|\\             ',
-        '             / /|        |\\ \\            ',
-        '            (__/|  [=M=] |\\__)           ',
-        '               |        |                ',
-        '               |________|                ',
         '',
         '',
+        '                  ___',
+        '                 /@@@\\',
+        '                 |@@@|',
+        '                 |@@@|',
+        '                /@@@@@\\',
+        '           __  |@@@@@@@|  __',
+        '          /##\\_/@@@@@@@\\_/##\\',
+        '         |####/#########\\####|',
+        '        /####|###########|####\\',
+        '        |####|###########|####|',
+        '       /#####|###########|#####\\',
+        '       |#####|###########|#####|',
     ], GUN_W),
 
-    # ── 1  Shotgun ────────────────────────────────────────────────────────
+    # ── 1  Shotgun — wide double barrel, pump grip ─────────────────────────
     _fit([
         '',
-        '  ======================================',
-        ' /======================================\\',
-        '|========================================|',
-        '|========================================|',
-        '|====================|                   ',
-        '|====================|                   ',
-        '                     |___________        ',
-        '                    /             \\      ',
-        '                   ( [o]       [o] )     ',
-        '                    \\    [===]    /      ',
-        '                     \\_____________/     ',
-        '',
-        '',
-        '',
+        '               (@)(@)',
+        '               /@@@@\\',
+        '              /@@@@@@\\',
+        '              |@@@@@@|',
+        '             /@@@@@@@@\\',
+        '             |@======@|',
+        '            /@@@@@@@@@@\\',
+        '        __  |@@@@@@@@@@|  __',
+        '       /##\\_/@@@@@@@@@@\\_/##\\',
+        '      |####/############\\####|',
+        '      |###|##############|###|',
+        '     /####|##############|####\\',
+        '     |####|##############|####|',
+        '    /#####|##############|#####\\',
     ], GUN_W),
 
-    # ── 2  Rifle ──────────────────────────────────────────────────────────
+    # ── 2  Rifle — slim muzzle, vented rail, stock in hands ────────────────
     _fit([
-        '   _____________________________________  ',
-        '  /_____________________________________| ',
-        ' |_____________________________________|  ',
-        ' |====[ R  I  F  L  E ]====|            ',
-        ' |_____________________________________|  ',
-        '           |===================|          ',
-        '           |                   |          ',
-        '           |    [  scope  ]    |          ',
-        '           |___________________|          ',
-        '/                                       \\ ',
-        '|_______________________________________|  ',
-        '\\                                       / ',
-        '',
-        '',
-        '',
+        '                   _',
+        '                  (@)',
+        '                 /@@@\\',
+        '                 |@@@|',
+        '                /@@@@@\\',
+        '                |@@@@@|',
+        '               /@=====@\\',
+        '               |@@@@@@@|',
+        '          __  /@@@@@@@@@\\  __',
+        '         /##\\_|@@@@@@@@@|_/##\\',
+        '        |####/###########\\####|',
+        '        |###|#############|###|',
+        '       /####|#############|####\\',
+        '       |####|#############|####|',
+        '      /#####|#############|#####\\',
     ], GUN_W),
 ]
 
@@ -217,6 +217,50 @@ ENEMY_SPRITES_2D: dict[str, list[list[str]]] = {
         ], ENEMY_W),
     ],
 }
+
+
+# Per-row silhouette spans: (kind, frame) -> [(first_col, last_col), ...]
+# Used to fill the enemy body solid between its leftmost and rightmost chars.
+_SPANS: dict[tuple[str, int], list[tuple[int, int]]] = {}
+
+def _row_spans(rows: list[str]) -> list[tuple[int, int]]:
+    spans = []
+    for r in rows:
+        stripped = r.strip()
+        if not stripped:
+            spans.append((-1, -1))
+        else:
+            first = len(r) - len(r.lstrip())
+            last  = len(r.rstrip()) - 1
+            spans.append((first, last))
+    return spans
+
+for _kind, _frames in ENEMY_SPRITES_2D.items():
+    for _fnum, _rows in enumerate(_frames):
+        _SPANS[(_kind, _fnum)] = _row_spans(_rows)
+
+
+def enemy_cell(kind: str, ry: float, rx: float,
+               frame: int, state: str) -> tuple[str, bool]:
+    """Sample the enemy sprite at normalised (ry, rx) ∈ [0,1]².
+
+    Returns (char, inside):
+      inside=False → cell is outside the body silhouette (fully transparent)
+      inside=True  → cell belongs to the body; char may be ' ' (plain body
+                     fill) or a detail character (eyes, belt, claws…).
+    """
+    key    = kind if kind in ENEMY_SPRITES_2D else 'zombie'
+    f      = (frame % 2) if state == 'chase' else 0
+    rows   = ENEMY_SPRITES_2D[key][f]
+
+    row_idx = min(int(ry * len(rows)), len(rows) - 1)
+    row_str = rows[row_idx]
+    col_idx = min(int(rx * len(row_str)), len(row_str) - 1)
+
+    first, last = _SPANS[(key, f)][row_idx]
+    if first < 0 or col_idx < first or col_idx > last:
+        return ' ', False
+    return row_str[col_idx], True
 
 
 def enemy_char(kind: str, ry: float, rx: float,

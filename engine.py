@@ -92,6 +92,11 @@ def _dim(color: tuple, factor: float) -> tuple:
     return (int(color[0] * factor), int(color[1] * factor), int(color[2] * factor))
 
 
+def _fog_factor(dist: float) -> float:
+    """Single distance-fog curve shared by walls, floor, enemies, projectiles."""
+    return max(0.15, 1.0 - dist / FAR_CLIP)
+
+
 # ── Renderer ─────────────────────────────────────────────────────────────────
 
 class Renderer:
@@ -158,7 +163,7 @@ class Renderer:
             fx = player.x + row_dist * rlx
             fy = player.y + row_dist * rly
 
-            fog = max(0.12, 1.0 - row_dist / 10.0)
+            fog = _fog_factor(row_dist)
             t   = (row - half_h) / max(view_h - half_h - 1, 1)
             bg  = _lerp_color(FLOOR_TOP, FLOOR_BOT, t)
 
@@ -186,45 +191,48 @@ class Renderer:
 
     def _draw_walls(self, world, player, view_angle,
                     view_h, half_h, w, z_buf) -> None:
+        # Dense ASCII charset for wall texture shading (close → far)
+        _WC = '@&#8Xx*:,.'
         for col in range(w):
             dist, wtype, side, wall_x = world.cast_ray(
                 player.x, player.y, view_angle, col, w)
 
             z_buf[col] = dist
-
-            # Dense ASCII charset for wall shading (close → far)
-            _WC = '@&#8Xx*:,. '
             if dist >= FAR_CLIP:
-                ch = ' '
-            else:
-                idx = int(dist / FAR_CLIP * (len(_WC) - 1))
-                ch  = _WC[idx]
-
-            # Tile boundary: thin vertical seam where tile faces meet
-            boundary = (wall_x < 0.04 or wall_x > 0.96)
-            if boundary:
-                ch = '|'
+                continue
 
             base_fg = WALL_FG.get(wtype, WALL_FG[1])
-
             # N/S faces slightly dimmer (directional shading)
             if side == 1:
-                base_fg = _dim(base_fg, 0.60)
+                base_fg = _dim(base_fg, 0.70)
 
-            if boundary:
-                base_fg = _dim(base_fg, 0.40)
+            fog       = _fog_factor(dist)
+            fg        = _dim(base_fg, fog)          # texture chars
+            bg        = _dim(base_fg, fog * 0.35)   # solid wall body
+            mortar_fg = _dim(base_fg, fog * 0.55)   # brick seams
 
-            # Linear fog: full bright at dist=0, dim at dist=FAR_CLIP
-            fog = max(0.20, 1.0 - dist / FAR_CLIP)
-            fg  = _dim(base_fg, fog)
+            tex_ch = _WC[int(dist / FAR_CLIP * (len(_WC) - 1))]
 
-            wh  = min(int(view_h / max(dist, 0.05)), view_h)
-            top = max(0,      half_h - wh // 2)
-            bot = min(view_h, half_h + wh // 2)
+            wall_h = view_h / max(dist, 0.05)       # unclamped, for texture v
+            top_f  = half_h - wall_h / 2
+            top    = max(0,      int(top_f))
+            bot    = min(view_h, int(half_h + wall_h / 2))
+            brick  = wall_h >= 12                   # too far → skip pattern
 
             for row in range(top, bot):
+                ch, cfg = tex_ch, fg
+                if brick:
+                    ty     = (row - top_f) / wall_h          # 0..1 down the tile
+                    course = int(ty * 6)                     # 6 brick rows/tile
+                    fy     = ty * 6 - course
+                    fx     = wall_x * 4 + (0.5 if course % 2 else 0.0)
+                    fx    -= math.floor(fx)
+                    if fy < 0.15:
+                        ch, cfg = '_', mortar_fg             # horizontal seam
+                    elif fx < 0.10:
+                        ch, cfg = '|', mortar_fg             # vertical seam
                 try:
-                    self.con.print(col, row, ch, fg=fg, bg=BLACK)
+                    self.con.print(col, row, ch, fg=cfg, bg=bg)
                 except Exception:
                     pass
 
@@ -255,14 +263,17 @@ class Renderer:
             sh = min(abs(int(view_h / max(tz, 0.1) * 0.30)), view_h)
             visible.append((tz, e, sx, sh))
 
-        FILL = '@#8Xx*'   # only dense chars — no sparse edge chars
+        DETAIL_FG = (25, 18, 18)   # dark glyphs on the coloured body
         max_sw = max(1, w // 5)
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
-            sw   = min(max(1, sh * 3 // 5), max_sw)
-            # Shift down so enemy stands on floor instead of floating at horizon
-            top  = half_h - sh // 4
-            fog  = max(0.4, 1.0 - depth / 14.0)
-            fg   = _dim(ENEMY_COLOR.get(e.kind, WHITE), fog)
+            sw = min(max(1, sh * 3 // 5), max_sw)
+            # Anchor feet to the floor line at this depth (base of the wall
+            # slice that would stand in the same cell).
+            floor_row = half_h + int(view_h / max(depth, 0.1) / 2)
+            top = min(floor_row, view_h) - sh
+            fog     = _fog_factor(depth)
+            base    = ENEMY_COLOR.get(e.kind, WHITE)
+            body_bg = _dim(base, fog * 0.55)
             sw_range = max(sw - 1, 1)
 
             for cx_off in range(-sw // 2, sw // 2 + 1):
@@ -275,25 +286,12 @@ class Renderer:
                     if row < 0 or row >= view_h:
                         continue
                     ry_norm = row_off / sh
-                    dcx = (rx - 0.5) * 2
-                    dcy = (ry_norm - 0.5) * 2
-                    er  = math.sqrt(dcx * dcx * 0.75 + dcy * dcy)
-                    spr_ch = _spr.enemy_char(
+                    ch, inside = _spr.enemy_cell(
                         e.kind, ry_norm, rx, frame, e.state)
-                    if er > 0.90:
-                        # Near/outside ellipse edge: sprite chars only, no fill
-                        if spr_ch is None:
-                            continue
-                        ch = spr_ch
-                    else:
-                        if spr_ch is not None:
-                            ch = spr_ch
-                        else:
-                            # Dense fill only — cut at 0.90 to avoid sparse black ring
-                            idx = min(len(FILL) - 1, int(er * er * (len(FILL) - 1)))
-                            ch  = FILL[idx]
+                    if not inside:
+                        continue
                     try:
-                        self.con.print(col, row, ch, fg=fg)
+                        self.con.print(col, row, ch, fg=DETAIL_FG, bg=body_bg)
                     except Exception:
                         pass
 
@@ -352,7 +350,7 @@ class Renderer:
             sx = int((w / 2) * (1.0 + tx / tz))
             sy = half_h   # eye level
             if 0 <= sx < w and 0 <= sy < view_h and z_buf[sx] > tz:
-                fog = max(0.4, 1.0 - tz / 14.0)
+                fog = _fog_factor(tz)
                 try:
                     self.con.print(sx, sy, '*', fg=_dim(ORANGE, fog))
                 except Exception:
@@ -391,15 +389,32 @@ class Renderer:
             flash_ln  = _spr.GUN_FLASH[fi]
             flash_x   = cx - len(flash_ln) // 2
             try:
-                self.con.print(flash_x, base_row - 1, flash_ln, fg=MAGENTA)
+                self.con.print(flash_x, base_row - 1, flash_ln, fg=YELLOW)
             except Exception:
                 pass
 
+        METAL   = (165, 165, 175)
+        METAL_D = ( 95,  95, 105)
+        HANDS   = (205, 165, 115)
+        VENT    = ( 60,  60,  70)
+
         for i, line in enumerate(gun_lines):
-            try:
-                self.con.print(gun_x, base_row + i, line, fg=YELLOW)
-            except Exception:
-                pass
+            y = base_row + i
+            for j, ch in enumerate(line):
+                if ch == ' ':
+                    continue
+                if ch == '@':
+                    fg, bg = METAL, _dim(METAL, 0.35)
+                elif ch == '#':
+                    fg, bg = HANDS, _dim(HANDS, 0.40)
+                elif ch == '=':
+                    fg, bg = VENT, _dim(METAL, 0.35)
+                else:
+                    fg, bg = METAL_D, None
+                try:
+                    self.con.print(gun_x + j, y, ch, fg=fg, bg=bg)
+                except Exception:
+                    pass
 
     # ---- Minimap -----------------------------------------------------------
 
