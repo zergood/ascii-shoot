@@ -374,6 +374,9 @@ class Enemy:
         self.state        = 'patrol'
         self.last_attack  = 0.0
         self.shot_cd      = 0.0
+        self.hit_t        = -99.0   # time of last bullet hit (white flash)
+        self.die_t        = 0.0     # time the death animation started
+        self.windup_t     = 0.0     # melee windup start (0 = not winding up)
         self.patrol_vx    = random.uniform(-0.6, 0.6)
         self.patrol_vy    = random.uniform(-0.6, 0.6)
         self.patrol_timer = random.uniform(1.0, 3.0)
@@ -382,7 +385,7 @@ class Enemy:
                projectiles: list | None = None) -> int:
         """Update AI. Returns melee damage this frame (0 if none).
         Ranged enemies append Projectile objects to *projectiles* if provided."""
-        if self.state == 'dead':
+        if self.state in ('dead', 'dying'):
             return 0
 
         ex   = player.x - self.x
@@ -420,13 +423,19 @@ class Enemy:
                     ))
             else:
                 if dist > 0.9:
+                    self.windup_t = 0.0   # target escaped — cancel windup
                     mv = self.speed * dt / dist
                     nx, ny = self.x + ex * mv, self.y + ey * mv
                     if not world.is_wall(nx, self.y): self.x = nx
                     if not world.is_wall(self.x, ny): self.y = ny
+                elif self.windup_t:
+                    # Telegraphed melee: 0.35s windup before the hit lands
+                    if now - self.windup_t >= 0.35:
+                        self.windup_t    = 0.0
+                        self.last_attack = now
+                        return random.randint(*self.dmg)
                 elif now - self.last_attack > 1.0:
-                    self.last_attack = now
-                    return random.randint(*self.dmg)
+                    self.windup_t = now
         else:  # patrol
             self.patrol_timer -= dt
             if self.patrol_timer <= 0:
@@ -460,7 +469,9 @@ class Game:
         self.enemies = [Enemy(x, y, k) for x, y, k in (enemy_spawns or ENEMY_SPAWNS)]
         self.pickups = list(pickup_spawns or PICKUP_SPAWNS)
         self.projectiles: list[Projectile] = []
-        self.corpses     = []
+        self.corpses     = []   # (x, y, kind)
+        # Blood particles: [x, y, h, vx, vy, vh, ttl]  (h = height, 0=floor)
+        self.particles: list[list[float]] = []
         self.messages    = []
         self.running  = True
         self.won      = False
@@ -482,6 +493,16 @@ class Game:
 
     def _msg(self, text: str):
         self.messages.append((text, time.time() + 2.5))
+
+    def _spawn_blood(self, x: float, y: float, n: int = 6):
+        for _ in range(n):
+            ang = random.uniform(0.0, 2 * math.pi)
+            spd = random.uniform(0.4, 2.2)
+            self.particles.append([
+                x, y, random.uniform(0.3, 0.6),
+                math.cos(ang) * spd, math.sin(ang) * spd,
+                random.uniform(0.4, 1.8), random.uniform(0.25, 0.55),
+            ])
 
     # ---- Input -------------------------------------------------------------
 
@@ -583,7 +604,7 @@ class Game:
             best_e, best_d = None, 22.0
 
             for e in self.enemies:
-                if e.state == 'dead':
+                if e.state in ('dead', 'dying'):
                     continue
                 ex, ey = e.x - p.x, e.y - p.y
                 dist   = math.sqrt(ex * ex + ey * ey)
@@ -596,21 +617,24 @@ class Game:
                 if self.world.has_los(p.x, p.y, e.x, e.y):
                     best_e, best_d = e, dot
 
-            if best_e is None or best_e.state == 'dead':
+            if best_e is None or best_e.state in ('dead', 'dying'):
                 continue
 
             dmg = random.randint(*wdef['dmg'])
             best_e.health -= dmg
             best_e.state   = 'chase'
+            best_e.hit_t   = time.time()
+            self._spawn_blood(best_e.x, best_e.y)
             hit_any = True
 
             if best_e.health <= 0:
-                best_e.state = 'dead'
+                best_e.state = 'dying'
+                best_e.die_t = time.time()
+                self._spawn_blood(best_e.x, best_e.y, n=14)
                 p.combo     += 1
                 p.combo_t    = time.time() + 3.0
                 bonus        = 150 * max(1, p.combo)
                 p.score     += bonus
-                self.corpses.append((best_e.x, best_e.y))
                 if p.combo > 1:
                     self._msg(f"x{p.combo} COMBO! +{bonus}pts [{best_d:.1f}m]")
                 else:
@@ -640,6 +664,24 @@ class Game:
         if p.health <= 0:
             self.running = False
             return
+
+        # Blood particles: fly, fall, expire
+        keep = []
+        for pt in self.particles:
+            pt[0] += pt[3] * dt
+            pt[1] += pt[4] * dt
+            pt[2] += pt[5] * dt
+            pt[5] -= 5.0 * dt          # gravity
+            pt[6] -= dt
+            if pt[6] > 0 and pt[2] > 0:
+                keep.append(pt)
+        self.particles = keep
+
+        # Death animation finished → become a corpse on the floor
+        for e in self.enemies:
+            if e.state == 'dying' and now - e.die_t > 0.45:
+                e.state = 'dead'
+                self.corpses.append((e.x, e.y, e.kind))
 
         # Update projectiles
         proj_dmg = 0

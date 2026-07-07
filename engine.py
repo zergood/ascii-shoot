@@ -123,7 +123,8 @@ class Renderer:
         z_buf = [999.0] * w
         self._draw_walls(game.world, game.player, view_angle, view_h, half_h, w, z_buf)
         self._draw_live_enemies(game, z_buf, view_angle, view_h, half_h, w, now)
-        self._draw_floor_objects(game, z_buf, view_angle, view_h, half_h, w)
+        self._draw_particles(game, z_buf, view_angle, view_h, half_h, w)
+        self._draw_floor_objects(game, z_buf, view_angle, view_h, half_h, w, now)
         self._draw_projectiles(game, z_buf, view_angle, view_h, half_h, w)
         self._draw_crosshair(game.flash, view_h, w)
         self._draw_gun(game, view_h, w)
@@ -222,15 +223,55 @@ class Renderer:
             for row in range(top, bot):
                 ch, cfg = tex_ch, fg
                 if brick:
-                    ty     = (row - top_f) / wall_h          # 0..1 down the tile
-                    course = int(ty * 6)                     # 6 brick rows/tile
-                    fy     = ty * 6 - course
-                    fx     = wall_x * 4 + (0.5 if course % 2 else 0.0)
-                    fx    -= math.floor(fx)
-                    if fy < 0.15:
-                        ch, cfg = '_', mortar_fg             # horizontal seam
-                    elif fx < 0.10:
-                        ch, cfg = '|', mortar_fg             # vertical seam
+                    ty = (row - top_f) / wall_h              # 0..1 down the tile
+
+                    if wtype == 2:
+                        # Mossy: vertical drips of varying length per column
+                        cxi  = int(wall_x * 12)
+                        drip = ((cxi * 37 + 13) % 10) / 10.0
+                        if drip > 0.2 and ty < drip * 0.8:
+                            ch, cfg = ';', mortar_fg
+
+                    elif wtype == 3:
+                        # Large stone blocks: 3 courses, staggered
+                        course = int(ty * 3)
+                        fy     = ty * 3 - course
+                        fx     = wall_x * 2 + (0.5 if course % 2 else 0.0)
+                        fx    -= math.floor(fx)
+                        if fy < 0.10:
+                            ch, cfg = '=', mortar_fg
+                        elif fx < 0.06:
+                            ch, cfg = '|', mortar_fg
+
+                    elif wtype == 4:
+                        # Metal panels with rivets at seam crossings
+                        fy = ty * 2 - int(ty * 2)
+                        fx = wall_x * 2 - int(wall_x * 2)
+                        near_h = fy < 0.10
+                        near_v = fx < 0.06
+                        if near_h and near_v:
+                            ch, cfg = 'o', fg
+                        elif near_h:
+                            ch, cfg = '-', mortar_fg
+                        elif near_v:
+                            ch, cfg = '|', mortar_fg
+
+                    elif wtype == 5:
+                        # Door: horizontal planks
+                        fy = ty * 5 - int(ty * 5)
+                        if fy < 0.16:
+                            ch, cfg = '=', mortar_fg
+
+                    else:
+                        # Default brick: 6 courses, staggered half-brick
+                        course = int(ty * 6)
+                        fy     = ty * 6 - course
+                        fx     = wall_x * 4 + (0.5 if course % 2 else 0.0)
+                        fx    -= math.floor(fx)
+                        if fy < 0.15:
+                            ch, cfg = '_', mortar_fg
+                        elif fx < 0.10:
+                            ch, cfg = '|', mortar_fg
                 try:
                     self.con.print(col, row, ch, fg=cfg, bg=bg)
                 except Exception:
@@ -267,6 +308,10 @@ class Renderer:
         max_sw = max(1, w // 5)
         for depth, e, sx, sh in sorted(visible, key=lambda v: -v[0]):
             sw = min(max(1, sh * 3 // 5), max_sw)
+            # Death animation: body collapses to the floor (width stays)
+            if e.state == 'dying':
+                q  = min(1.0, (now - e.die_t) / 0.45)
+                sh = max(2, int(sh * (1.0 - 0.7 * q)))
             # Anchor feet to the floor line at this depth (base of the wall
             # slice that would stand in the same cell).
             floor_row = half_h + int(view_h / max(depth, 0.1) / 2)
@@ -274,6 +319,15 @@ class Renderer:
             fog     = _fog_factor(depth)
             base    = ENEMY_COLOR.get(e.kind, WHITE)
             body_bg = _dim(base, fog * 0.55)
+            if e.state == 'dying':
+                body_bg = _dim(body_bg, 1.0 - 0.6 * q)
+            elif now - e.hit_t < 0.10:
+                # Just shot: flash the body white
+                body_bg = _lerp_color(body_bg, WHITE, 0.75)
+            elif e.windup_t:
+                # Melee windup: pulse toward warning yellow before the hit
+                t = min(1.0, (now - e.windup_t) / 0.35)
+                body_bg = _lerp_color(body_bg, (255, 235, 120), 0.5 * t)
             sw_range = max(sw - 1, 1)
 
             for cx_off in range(-sw // 2, sw // 2 + 1):
@@ -295,10 +349,43 @@ class Renderer:
                     except Exception:
                         pass
 
+    # ---- Blood particles ----------------------------------------------------
+
+    def _draw_particles(self, game, z_buf, view_angle,
+                        view_h, half_h, w) -> None:
+        p   = game.player
+        dx  = math.cos(view_angle);  dy = math.sin(view_angle)
+        px  =  0.66 * dy;            py = -0.66 * dx
+        inv = 1.0 / (px * dy - dx * py)
+
+        for x, y, hgt, _vx, _vy, _vh, ttl in game.particles:
+            ex, ey = x - p.x, y - p.y
+            tx = inv * ( dy * ex - dx * ey)
+            tz = inv * (-py * ex + px * ey)
+            if tz <= 0.1:
+                continue
+            sx = int((w / 2) * (1.0 + tx / tz))
+            if not (0 <= sx < w) or z_buf[sx] <= tz:
+                continue
+            wall_h = view_h / max(tz, 0.1)
+            row = int(half_h + wall_h / 2 - hgt * wall_h * 0.55)
+            if 0 <= row < view_h:
+                fog = _fog_factor(tz)
+                ch  = '*' if ttl > 0.25 else ','
+                try:
+                    self.con.print(sx, row, ch, fg=_dim((205, 30, 30), fog))
+                except Exception:
+                    pass
+
     # ---- Floor objects (corpses + pickups) ---------------------------------
 
+    PICKUP_SPR = {
+        'hp':   [' + ', '+++', ' + '],
+        'ammo': ['/=\\', '|*|', '\\=/'],
+    }
+
     def _draw_floor_objects(self, game, z_buf, view_angle,
-                            view_h, half_h, w) -> None:
+                            view_h, half_h, w, now) -> None:
         p   = game.player
         dx  = math.cos(view_angle);  dy = math.sin(view_angle)
         px  =  0.66 * dy;            py = -0.66 * dx
@@ -310,25 +397,72 @@ class Renderer:
             tz = inv * (-py * ex + px * ey)
             return tx, tz
 
-        objs = (
-            [(cx, cy, '%', RED)   for cx, cy in game.corpses] +
-            [(px2, py2,
-              '+' if k == 'hp' else '*',
-              GREEN if k == 'hp' else YELLOW)
-             for px2, py2, k in game.pickups]
-        )
-        for ox, oy, fch, fcolor in objs:
-            tx, tz = _proj(ox, oy)
+        # ── Corpses: flat pools in the victim's colour ───────────────────────
+        for cx, cy, kind in game.corpses:
+            tx, tz = _proj(cx, cy)
             if tz <= 0.1:
                 continue
-            sx  = int((w / 2) * (1.0 + tx / tz))
-            sh  = min(abs(int(view_h / tz)), view_h)
-            row = min(view_h - 1, half_h + sh // 3)
-            if 0 <= sx < w and z_buf[sx] > tz:
-                try:
-                    self.con.print(sx, row, fch, fg=fcolor)
-                except Exception:
-                    pass
+            sx        = int((w / 2) * (1.0 + tx / tz))
+            wall_h    = view_h / max(tz, 0.1)
+            floor_row = min(view_h - 1, half_h + int(wall_h / 2))
+            cw        = max(2, int(wall_h * 0.33))
+            fog       = _fog_factor(tz)
+            base      = _dim(ENEMY_COLOR.get(kind, RED), 0.55)
+            fgc       = _dim(base, fog)
+            bgc       = _dim(base, fog * 0.45)
+            for i, off in enumerate(range(-cw // 2, cw // 2 + 1)):
+                col = sx + off
+                if not (0 <= col < w) or z_buf[col] <= tz:
+                    continue
+                for r, rowy in enumerate((floor_row - 1, floor_row)):
+                    # top row narrower → rounded pool shape
+                    if r == 0 and abs(off) > cw // 3:
+                        continue
+                    if 0 <= rowy < view_h:
+                        try:
+                            self.con.print(col, rowy, '~%'[(i + r) % 2],
+                                           fg=fgc, bg=bgc)
+                        except Exception:
+                            pass
+
+        # ── Pickups: small pulsing sprites standing on the floor ────────────
+        for px2, py2, kind in game.pickups:
+            tx, tz = _proj(px2, py2)
+            if tz <= 0.1:
+                continue
+            sx        = int((w / 2) * (1.0 + tx / tz))
+            wall_h    = view_h / max(tz, 0.1)
+            floor_row = min(view_h - 1, half_h + int(wall_h / 2))
+            base      = GREEN if kind == 'hp' else YELLOW
+            pulse     = 0.75 + 0.25 * math.sin(now * 5.0 + px2 + py2)
+            fog       = _fog_factor(tz)
+            fgc       = _dim(base, min(1.0, fog * pulse * 1.5))
+
+            spr = self.PICKUP_SPR.get(kind)
+            if spr is None or wall_h < 10:
+                # Too far — single blinking char
+                if 0 <= sx < w and z_buf[sx] > tz:
+                    try:
+                        self.con.print(sx, floor_row,
+                                       '+' if kind == 'hp' else '*', fg=fgc)
+                    except Exception:
+                        pass
+                continue
+
+            sph = len(spr)
+            for r, srow in enumerate(spr):
+                rowy = floor_row - sph + 1 + r
+                if not (0 <= rowy < view_h):
+                    continue
+                for c, ch in enumerate(srow):
+                    if ch == ' ':
+                        continue
+                    col = sx - len(srow) // 2 + c
+                    if 0 <= col < w and z_buf[col] > tz:
+                        try:
+                            self.con.print(col, rowy, ch, fg=fgc)
+                        except Exception:
+                            pass
 
     # ---- Projectiles -------------------------------------------------------
 
@@ -453,7 +587,7 @@ class Renderer:
                 except Exception:
                     pass
 
-        for cx2, cy2 in game.corpses:
+        for cx2, cy2, _kind in game.corpses:
             mx = int(cx2 * scale);  my = int(cy2 * scale)
             if 0 <= mx < size and 0 <= my < size:
                 try:

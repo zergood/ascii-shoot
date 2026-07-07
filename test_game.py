@@ -366,11 +366,28 @@ class TestEnemy(unittest.TestCase):
         e.last_attack = 0.0
         p = Player()
         p.x, p.y = 2.5, 2.5   # dist ≈ 0.1 < 0.9
+        # First adjacent update starts the 0.35s windup (no damage yet)…
         dmg = e.update(0.1, p, self.world, 1000.0)
+        self.assertEqual(dmg, 0)
+        self.assertGreater(e.windup_t, 0)
+        # …and after the windup elapses the hit lands.
+        dmg = e.update(0.1, p, self.world, 1000.5)
         zombie_max = Enemy.KINDS['zombie']['dmg'][1]
         zombie_min = Enemy.KINDS['zombie']['dmg'][0]
         self.assertGreaterEqual(dmg, zombie_min)
         self.assertLessEqual(dmg, zombie_max)
+
+    def test_windup_cancelled_when_player_escapes(self):
+        e = Enemy(2.6, 2.5)
+        e.state = 'chase'
+        e.last_attack = 0.0
+        p = Player()
+        p.x, p.y = 2.5, 2.5
+        e.update(0.1, p, self.world, 1000.0)   # windup starts
+        p.x = 5.5                              # player runs away
+        dmg = e.update(0.1, p, self.world, 1000.5)
+        self.assertEqual(dmg, 0)
+        self.assertEqual(e.windup_t, 0.0)
 
     def test_attack_cooldown_respected(self):
         e = Enemy(2.6, 2.5)
